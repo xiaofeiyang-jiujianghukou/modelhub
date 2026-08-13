@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - 模枢 ModelHub</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: white; border-radius: 16px; padding: 40px;
+    width: 380px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  h1 { font-size: 22px; margin-bottom: 8px; color: #1a1a2e; }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+  .tabs { display: flex; margin-bottom: 24px; background: #f0f0f5; border-radius: 8px; padding: 4px; }
+  .tab { flex: 1; text-align: center; padding: 8px; cursor: pointer; border-radius: 6px; font-size: 14px; color: #666; }
+  .tab.active { background: white; color: #667eea; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .form { display: none; }
+  .form.active { display: block; }
+  label { display: block; font-size: 13px; color: #555; margin: 16px 0 6px; }
+  input {
+    width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px;
+    font-size: 14px; transition: border-color 0.2s;
+  }
+  input:focus { outline: none; border-color: #667eea; }
+  button {
+    width: 100%; padding: 12px; margin-top: 24px; border: none; border-radius: 8px;
+    background: #667eea; color: white; font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #5a67d8; }
+  .error { color: #e53e3e; font-size: 13px; margin-top: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>⚡ 模枢 ModelHub</h1>
+  <p class="subtitle">多模型智能编排网关控制台</p>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('login')">登录</div>
+    <div class="tab" onclick="switchTab('register')">注册</div>
+  </div>
+
+  <div class="form active" id="login-form">
+    <label>邮箱</label>
+    <input type="email" id="login-email" placeholder="you@example.com">
+    <label>密码</label>
+    <input type="password" id="login-password" placeholder="••••••••">
+    <button onclick="doLogin()">登 录</button>
+    <div class="error" id="login-error"></div>
+  </div>
+
+  <div class="form" id="register-form">
+    <label>邮箱</label>
+    <input type="email" id="reg-email" placeholder="you@example.com">
+    <label>密码（至少8位）</label>
+    <input type="password" id="reg-password" placeholder="••••••••">
+    <label>显示名</label>
+    <input type="text" id="reg-name" placeholder="你的名字">
+    <button onclick="doRegister()">注 册</button>
+    <div class="error" id="reg-error"></div>
+  </div>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.form').forEach(f => f.classList.remove('active'));
+  if (tab === 'login') {
+    document.querySelectorAll('.tab')[0].classList.add('active');
+    document.getElementById('login-form').classList.add('active');
+  } else {
+    document.querySelectorAll('.tab')[1].classList.add('active');
+    document.getElementById('register-form').classList.add('active');
+  }
+}
+
+async function api(path, method, body, token) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const resp = await fetch('/v1' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  return resp.json();
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value;
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  const data = await api('/auth/login', 'POST', { email, password });
+  if (data.access_token) {
+    localStorage.setItem('gateway_token', data.access_token);
+    location.href = '/dashboard';
+  } else {
+    errEl.textContent = (data.error && data.error.message) || '登录失败';
+  }
+}
+
+async function doRegister() {
+  const email = document.getElementById('reg-email').value;
+  const password = document.getElementById('reg-password').value;
+  const name = document.getElementById('reg-name').value;
+  const errEl = document.getElementById('reg-error');
+  errEl.textContent = '';
+  const data = await api('/auth/register', 'POST', { email, password, display_name: name });
+  if (data.message) {
+    alert('注册成功！请登录');
+    switchTab('login');
+    document.getElementById('login-email').value = email;
+  } else {
+    errEl.textContent = (data.error && data.error.message) || '注册失败';
+  }
+}
+</script>
+</body>
+</html>

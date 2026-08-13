@@ -1,0 +1,22 @@
+# ── 敏感文件（绝不入库）──────────────────────────────────
+.env                    # 真实 API Key
+gateway.db              # 运行数据库
+*.db
+*.sqlite
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── 运行产物 ────────────────────────────────────────────
+nohup.out
+*.log
+.DS_Store
+.env
+.claude/

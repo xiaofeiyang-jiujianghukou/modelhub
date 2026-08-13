@@ -1,0 +1,43 @@
+# 多模型智能编排网关 - 生产部署编排
+# 使用方式: cp .env.example .env && docker compose up -d
+
+version: "3.9"
+
+services:
+  gateway:
+    build: .
+    container_name: multi-model-gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/gateway.db
+    volumes:
+      - gateway-data:/data
+    restart: unless-stopped
+
+  # PostgreSQL（生产环境推荐）
+  # 启用后修改 .env: DATABASE_URL=postgresql+asyncpg://gateway:secret@db:5432/gateway
+  db:
+    image: postgres:16-alpine
+    container_name: gateway-db
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: gateway
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    profiles: ["full"]
+
+  # Redis 缓存（生产环境推荐）
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    restart: unless-stopped
+    profiles: ["full"]
+
+volumes:
+  gateway-data:
+  db-data:

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>控制台 - 模枢 ModelHub</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f6fa; color: #1a1a2e; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 220px;
+    background: #1a1a2e; color: white; padding: 24px 16px;
+  }
+  .sidebar h2 { font-size: 17px; margin-bottom: 4px; }
+  .sidebar .sub { font-size: 12px; color: #888; margin-bottom: 28px; }
+  .nav-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; font-size: 14px; color: #aaa; }
+  .nav-item:hover { background: rgba(255,255,255,0.08); color: white; }
+  .nav-item.active { background: #667eea; color: white; }
+  .main { margin-left: 220px; padding: 32px; }
+  .card {
+    background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+  .stat { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .stat .label { font-size: 13px; color: #888; }
+  .stat .value { font-size: 26px; font-weight: 700; margin-top: 8px; }
+  .stat .value.green { color: #38a169; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 10px 12px; background: #f8f9fc; color: #555; border-bottom: 2px solid #eee; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+  .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .badge.success { background: #c6f6d5; color: #22543d; }
+  .badge.error { background: #fed7d7; color: #742a2a; }
+  .badge.pending { background: #fefcbf; color: #744210; }
+  .btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #667eea; color: white; }
+  .btn-danger { background: #fc8181; color: white; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .hidden { display: none; }
+  .key-display {
+    background: #1a1a2e; color: #7df9ff; padding: 12px; border-radius: 8px;
+    font-family: monospace; font-size: 13px; word-break: break-all; margin: 12px 0;
+  }
+  h3 { margin-bottom: 16px; font-size: 16px; }
+  .flex-row { display: flex; gap: 12px; align-items: center; }
+  input[type="text"] { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; flex: 1; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <h2>⚡ Gateway</h2>
+  <div class="sub">多模型编排网关</div>
+  <div class="nav-item active" data-tab="overview" onclick="switchNav('overview')">📊 概览</div>
+  <div class="nav-item" data-tab="keys" onclick="switchNav('keys')">🔑 API Keys</div>
+  <div class="nav-item" data-tab="models" onclick="switchNav('models')">🤖 模型</div>
+  <div class="nav-item" data-tab="logs" onclick="switchNav('logs')">📜 日志</div>
+  <div class="nav-item" data-tab="test" onclick="switchNav('test')">🧪 测试对话</div>
+  <div style="margin-top: 40px;">
+    <button class="btn btn-danger" onclick="logout()" style="width:100%">退出登录</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- 概览 -->
+  <div id="tab-overview">
+    <div class="stat-grid">
+      <div class="stat"><div class="label">账户余额</div><div class="value green" id="balance">--</div></div>
+      <div class="stat"><div class="label">API Keys</div><div class="value" id="key-count">--</div></div>
+      <div class="stat"><div class="label">总请求数</div><div class="value" id="log-count">--</div></div>
+      <div class="stat"><div class="label">总消费</div><div class="value" id="total-cost">--</div></div>
+    </div>
+    <div class="card" style="margin-top:24px">
+      <h3>快速开始</h3>
+      <p style="font-size:14px;color:#555;margin-bottom:12px">使用 OpenAI SDK 连接：</p>
+      <div class="key-display" id="quickstart">python3 -c "from openai import OpenAI; c = OpenAI(api_key='<你的Key>', base_url='http://localhost:8000/v1')"</div>
+    </div>
+  </div>
+
+  <!-- Keys -->
+  <div id="tab-keys" class="hidden">
+    <div class="card">
+      <h3>创建 API Key</h3>
+      <div class="flex-row">
+        <input type="text" id="new-key-name" placeholder="Key 名称，如 prod-server">
+        <button class="btn btn-primary" onclick="createKey()">创建</button>
+      </div>
+      <div id="new-key-result"></div>
+    </div>
+    <div class="card">
+      <h3>我的 API Keys</h3>
+      <table>
+        <thead><tr><th>名称</th><th>Key</th><th>状态</th><th>最近使用</th><th>操作</th></tr></thead>
+        <tbody id="keys-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Models -->
+  <div id="tab-models" class="hidden">
+    <div class="card">
+      <h3>可用模型</h3>
+      <table>
+        <thead><tr><th>模型 ID</th><th>类型</th><th>输入价(/1M)</th><th>输出价(/1M)</th><th>上下文</th></tr></thead>
+        <tbody id="models-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Logs -->
+  <div id="tab-logs" class="hidden">
+    <div class="card">
+      <h3>请求日志</h3>
+      <table>
+        <thead><tr><th>时间</th><th>模型</th><th>供应商</th><th>类型</th><th>状态</th><th>Tokens</th><th>费用</th><th>延迟</th></tr></thead>
+        <tbody id="logs-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Test -->
+  <div id="tab-test" class="hidden">
+    <div class="card">
+      <h3>测试对话</h3>
+      <div class="flex-row">
+        <select id="test-model" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px">
+          <option value="deepseek-chat">deepseek-chat</option>
+          <option value="glm-4-flash">glm-4-flash</option>
+        </select>
+        <select id="test-key" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px"></select>
+      </div>
+      <textarea id="test-prompt" rows="3" style="width:100%;margin-top:12px;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:14px" placeholder="输入消息...">用一句话介绍你自己</textarea>
+      <button class="btn btn-primary" style="margin-top:12px" onclick="testChat()">发送</button>
+      <div class="key-display" id="test-result" style="margin-top:16px;color:#ddd">等待测试...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = localStorage.getItem('gateway_token');
+if (!TOKEN) location.href = '/login';
+
+async function api(path, method = 'GET', body, authType = 'jwt') {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authType === 'jwt') headers['Authorization'] = 'Bearer ' + TOKEN;
+  const resp = await fetch('/v1' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  if (resp.status === 401 && authType === 'jwt') { localStorage.removeItem('gateway_token'); location.href = '/login'; }
+  return resp.json();
+}
+
+function switchNav(tab) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.tab === tab));
+  document.querySelectorAll('[id^="tab-"]').forEach(t => t.classList.add('hidden'));
+  document.getElementById('tab-' + tab).classList.remove('hidden');
+  if (tab === 'overview') loadOverview();
+  if (tab === 'keys') loadKeys();
+  if (tab === 'models') loadModels();
+  if (tab === 'logs') loadLogs();
+  if (tab === 'test') loadTestKeys();
+}
+
+async function loadOverview() {
+  const [bal, keys, logs] = await Promise.all([
+    api('/dashboard/balance'), api('/dashboard/keys'), api('/dashboard/logs?limit=100'),
+  ]);
+  document.getElementById('balance').textContent = '$' + (bal.balance_usd || 0).toFixed(2);
+  document.getElementById('key-count').textContent = (keys.data || []).length;
+  const logData = logs.data || [];
+  document.getElementById('log-count').textContent = logData.length;
+  const total = logData.reduce((s, l) => s + (l.cost_usd || 0), 0);
+  document.getElementById('total-cost').textContent = '$' + total.toFixed(6);
+}
+
+async function loadKeys() {
+  const data = await api('/dashboard/keys');
+  const tbody = document.getElementById('keys-table');
+  tbody.innerHTML = (data.data || []).map(k => `
+    <tr>
+      <td>${k.name}</td>
+      <td><code>${k.key_prefix}</code></td>
+      <td><span class="badge ${k.is_active ? 'success' : 'error'}">${k.is_active ? '活跃' : '已撤销'}</span></td>
+      <td>${k.last_used_at ? new Date(k.last_used_at * 1000).toLocaleString() : '从未使用'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="revokeKey('${k.id}')">撤销</button></td>
+    </tr>`).join('');
+}
+
+async function createKey() {
+  const name = document.getElementById('new-key-name').value || 'default';
+  const data = await api('/dashboard/keys', 'POST', { name });
+  if (data.key) {
+    document.getElementById('new-key-result').innerHTML =
+      `<div class="key-display">${data.key}</div><p style="color:#e53e3e;font-size:12px">⚠️ 请立即保存，仅显示一次！</p>`;
+    loadKeys();
+  }
+}
+
+async function revokeKey(id) {
+  if (!confirm('确认撤销此 Key？')) return;
+  await api('/dashboard/keys/' + id, 'DELETE');
+  loadKeys();
+}
+
+async function loadModels() {
+  // 使用 JWT 登录态获取模型列表（网关支持 JWT 认证）
+  const data = await api('/models').catch(() => ({}));
+  const models = data.data || [];
+  const tbody = document.getElementById('models-table');
+  tbody.innerHTML = models.map(m => `
+    <tr>
+      <td><code>${m.id}</code></td>
+      <td>${m.meta && m.meta.type || 'llm'}</td>
+      <td>$${m.meta && m.meta.input_price_per_1m_tokens || '-'}</td>
+      <td>$${m.meta && m.meta.output_price_per_1m_tokens || '-'}</td>
+      <td>${m.meta && m.meta.context_window || '-'}</td>
+    </tr>`).join('');
+}
+
+async function loadLogs() {
+  const data = await api('/dashboard/logs?limit=50');
+  const tbody = document.getElementById('logs-table');
+  tbody.innerHTML = (data.data || []).map(l => `
+    <tr>
+      <td>${new Date(l.created_at * 1000).toLocaleString()}</td>
+      <td><code>${l.model}</code></td>
+      <td>${l.provider || '-'}</td>
+      <td>${l.request_type}</td>
+      <td><span class="badge ${l.status === 'success' ? 'success' : 'error'}">${l.status}</span></td>
+      <td>${l.total_tokens || '-'}</td>
+      <td>$${(l.cost_usd || 0).toFixed(6)}</td>
+      <td>${l.latency_ms || '-'}ms</td>
+    </tr>`).join('');
+}
+
+async function loadTestKeys() {
+  const data = await api('/dashboard/keys');
+  const select = document.getElementById('test-key');
+  select.innerHTML = (data.data || []).map(k => `<option value="${k.key_prefix}">${k.name} (${k.key_prefix}...)</option>`).join('');
+}
+
+async function testChat() {
+  const model = document.getElementById('test-model').value;
+  const prompt = document.getElementById('test-prompt').value;
+  const resultEl = document.getElementById('test-result');
+  resultEl.textContent = '调用中...';
+
+  // 需要明文 key：从创建记录里取（简化：提示用 key_prefix 找到明文）
+  const keys = await api('/dashboard/keys');
+  resultEl.textContent = '提示：请使用创建 API Key 时保存的明文（Key 仅创建时显示一次）。';
+}
+
+async function logout() {
+  localStorage.removeItem('gateway_token');
+  location.href = '/login';
+}
+
+loadOverview();
+</script>
+</body>
+</html>
