@@ -268,15 +268,16 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                     model.display_name = sm.display_name
                 if sm.context_window is not None:
                     model.context_window = sm.context_window
-                if sm.input_price is not None:
+                # 价格：官方价优先——已有 official 价的模型不被 default 价覆盖
+                # （多供应商共模型场景，如 Token Plan 拉取的 deepseek-v4-pro 与 DeepSeek 官方同 ID）
+                price_conflict = (model.price_source == "official") and (sm.price_source == "default")
+                if sm.input_price is not None and not price_conflict:
                     model.input_price = sm.input_price
                     model.price_source = sm.price_source
-                elif not model.price_source:
-                    model.price_source = sm.price_source
-                if sm.output_price is not None:
+                if sm.output_price is not None and not price_conflict:
                     model.output_price = sm.output_price
                     model.price_source = sm.price_source
-                elif not model.price_source:
+                if not model.price_source:
                     model.price_source = sm.price_source
                 model.synced_from = spec.key
                 model.last_synced_at = now

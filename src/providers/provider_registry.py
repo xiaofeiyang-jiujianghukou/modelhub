@@ -110,22 +110,16 @@ _PROVIDER_SPECS = [
             StaticModelDef("hunyuan-lite", "hunyuan-lite", "混元 Lite（免费）", 0.0, 0.0, 262144, "official"),
         ),
     ),
-    # ── 阿里百炼 DashScope（无文档化 /models，静态清单）────────────────────────
-    # 官方价（USD/1M tokens，华北2北京·中国内地节点，源自 alibabacloud.com/help/zh/model-studio/model-pricing）：
-    # qwen-max 0.345/1.377、qwen-plus 0.115/0.287（≤128K 档）、qwen-turbo 0.044/0.087、
-    # qwen3-8b 0.072/0.287、qwen3-32b 0.287/1.147（非思考模式；思考模式输出另计）
-    # 上下文（源自 help.aliyun.com/zh/model-studio/text-generation-model）：qwen-max 32k、qwen-plus 1M、qwen-turbo 128k、qwen3-8b/32b 128k
+    # ── 阿里百炼 Token Plan（套餐端点，GET /models 可用，api 拉取）────────────────
+    # token-plan.cn-beijing.maas.aliyuncs.com 为 Token Plan 订阅套餐专用端点（Key 为 sk-sp- 前缀）
+    # 模型清单由套餐决定（qwen3.x-max/plus/flash、glm-5.2、deepseek-v4-* 等），
+    # 套餐按订阅计费无按量单价 → 拉取后标 default 价
+    # 过滤：wan2.7 图像、qwen-audio 音频（非文本 LLM）
     ProviderSpec(
-        key="bailian", display_name="阿里百炼 DashScope",
-        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model_source="static",
-        static_models=(
-            StaticModelDef("qwen-max", "qwen-max", "通义千问 Max", 0.345, 1.377, 32768, "official"),
-            StaticModelDef("qwen-plus", "qwen-plus", "通义千问 Plus", 0.115, 0.287, 1048576, "official"),
-            StaticModelDef("qwen-turbo", "qwen-turbo", "通义千问 Turbo", 0.044, 0.087, 131072, "official"),
-            StaticModelDef("qwen3-8b", "qwen3-8b", "Qwen3 8B", 0.072, 0.287, 131072, "official"),
-            StaticModelDef("qwen3-32b", "qwen3-32b", "Qwen3 32B", 0.287, 1.147, 131072, "official"),
-        ),
+        key="bailian", display_name="阿里百炼 Token Plan",
+        default_base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        model_source="api",
+        exclude_patterns=("wan2.7", "qwen-audio", "audio"),
     ),
     # ── 月之暗面 Kimi（api 拉取，OpenAI 结构 + 能力字段）──────────────────────
     ProviderSpec(
