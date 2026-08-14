@@ -36,6 +36,7 @@ class SyncedModel:
     output_price: Optional[float] = None
     context_window: Optional[int] = None
     price_source: str = "default"
+    upstream_model: Optional[str] = None   # 上游真实模型名（static 清单与网关 id 可能不同）
 
 
 class SyncResult(BaseModel):
@@ -234,6 +235,7 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                     id=m.id, display_name=m.display_name, owned_by=spec.key,
                     input_price=m.input_price, output_price=m.output_price,
                     context_window=m.context_window, price_source=m.price_source,
+                    upstream_model=m.upstream_model,
                 )
                 for m in spec.static_models
             ]
@@ -297,6 +299,8 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 result.added += 1
 
             # 通道 upsert（model_id + provider_id 唯一）
+            # upstream 用上游真实模型名（static 清单可配置；api 拉取即上游 id）
+            upstream = sm.upstream_model or sm.id
             channel = await db.scalar(
                 select(RouteChannel).where(
                     RouteChannel.model_id == sm.id,
@@ -304,13 +308,13 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 )
             )
             if channel:
-                channel.upstream_model = sm.id
+                channel.upstream_model = upstream
                 channel.is_active = True
             else:
                 db.add(RouteChannel(
                     model_id=sm.id,
                     provider_id=provider.id,
-                    upstream_model=sm.id,
+                    upstream_model=upstream,
                     weight=100,
                     priority=100,
                     is_active=True,

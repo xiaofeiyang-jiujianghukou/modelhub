@@ -24,30 +24,39 @@ from src.models import Provider, RouteChannel
 from src.services.crypto import decrypt_credentials
 
 # Codex 契约字段默认模板（新模型条目）
+# 0.147 起必填（黑盒验证）：description（可为 null）、default_reasoning_level、
+# supported_reasoning_levels、shell_type、visibility、supported_in_api、priority、
+# support_verbosity、apply_patch_tool_type、truncation_policy、
+# supports_image_detail_original、supports_parallel_tool_calls、
+# 以及 base_instructions 或 model_messages.instructions_template 二选一
 _TEMPLATE = {
     "display_name": "",
-    "description": "",
+    "description": "",   # 渲染时统一为 [厂商][模型] 格式
+    "default_reasoning_level": "medium",
+    "supported_reasoning_levels": [],
+    "shell_type": "shell_command",
+    "visibility": "list",
+    "supported_in_api": True,
+    "priority": 0,
+    "upgrade": None,
+    "support_verbosity": False,
+    "default_verbosity": None,
+    "apply_patch_tool_type": None,
+    "truncation_policy": {"mode": "bytes", "limit": 10000},
+    "supports_image_detail_original": False,
     "context_window": 131072,
     "max_context_window": 131072,
-    "effective_context_window_percent": 95,
-    "auto_compact_token_limit": 98304,
-    "input_modalities": ["text"],
+    "experimental_supported_tools": [],
     "supports_parallel_tool_calls": True,
-    "supports_image_detail_original": False,
-    "supports_search_tool": False,
-    "web_search_tool_type": "text_and_image",
-    "apply_patch_tool_type": "freeform",
-    "shell_type": "default",
-    "supports_reasoning_summaries": False,
-    "default_reasoning_summary": "auto",
-    "default_reasoning_level": "none",
-    "supported_reasoning_levels": [
-        {"effort": "none", "options": []},
-        {"effort": "low", "options": []},
-        {"effort": "medium", "options": []},
-        {"effort": "high", "options": []},
-    ],
+    "model_messages": {
+        "instructions_template": "You are a helpful coding assistant. Follow the user's instructions carefully."
+    },
 }
+
+
+def _describe(display_name: str, slug: str) -> str:
+    """模型描述统一格式：[厂商][模型]"""
+    return f"[{display_name}][{slug}]"
 
 
 def configured_catalog_path() -> Optional[Path]:
@@ -102,6 +111,12 @@ def render_catalog(gateway_models: list[dict], existing: dict) -> dict:
             entry = dict(_TEMPLATE)
             entry["slug"] = mid
             entry["display_name"] = name_map.get(mid) or mid
+        else:
+            # 已有条目：用模板补齐缺失字段（旧条目可能缺字段导致 Codex 解析失败）
+            for k, v in _TEMPLATE.items():
+                entry.setdefault(k, v)
+        # 描述统一 [厂商][模型] 格式
+        entry["description"] = _describe(entry.get("display_name") or mid, mid)
         ctx = ctx_map.get(mid)
         if ctx:
             entry["context_window"] = ctx

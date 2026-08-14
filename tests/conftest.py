@@ -61,6 +61,14 @@ def _real_encryption_key(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _disable_codex_catalog_sync(monkeypatch):
+    """全局：禁用 Codex 目录后台同步——测试库数据不得污染真实 ~/.codex 目录"""
+    from src.config import settings
+    monkeypatch.setattr(settings, "codex_catalog_path", None)
+    yield
+
+
 @pytest_asyncio.fixture
 async def db_session(db_session_factory) -> AsyncGenerator[AsyncSession, None]:
     """数据库会话"""

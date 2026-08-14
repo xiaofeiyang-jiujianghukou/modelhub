@@ -173,17 +173,17 @@ async def test_static_sync_and_idempotent(db_session):
 
     r1 = await sync_provider_models(db_session, provider, spec)
     assert r1.status == "success"
-    assert r1.added == 3
-    assert r1.model_ids == ["glm-4-flash", "glm-5-2", "glm-5-1"]
+    assert r1.added == 4
+    assert r1.model_ids == ["glm-4-flash", "glm-5-2", "glm-5-1", "glm-5-3"]
 
     # 幂等：再跑一次全部 updated
     r2 = await sync_provider_models(db_session, provider, spec)
     assert r2.added == 0
-    assert r2.updated == 3
+    assert r2.updated == 4
 
     # 通道唯一
     channels = (await db_session.execute(select(RouteChannel).where(RouteChannel.provider_id == provider.id))).scalars().all()
-    assert len(channels) == 3
+    assert len(channels) == 4
 
     # 静态清单价格标注（glm-4-flash 官方免费）
     m = await db_session.get(ModelCatalog, "glm-4-flash")

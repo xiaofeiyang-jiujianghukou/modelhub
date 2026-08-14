@@ -135,6 +135,7 @@ _PROVIDER_SPECS = [
     # ── 智谱 GLM（无 /models 端点，静态清单，官方文档价）──────────────────────
     # 官方定价页 open.bigmodel.cn/pricing（元/1M，按 7.2 折算 USD）：
     # glm-4-flash 免费（128K）；glm-5.2 8/28 元（1M 上下文）；glm-5.1 6/24 元（<32K 档，200K 上下文）
+    # glm-5.3（2026-08-14 发布）：1M 上下文/128K 输出，API 按量价未公布 → 默认价待官方定价
     ProviderSpec(
         key="glm", display_name="智谱 GLM",
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
@@ -143,6 +144,7 @@ _PROVIDER_SPECS = [
             StaticModelDef("glm-4-flash", "glm-4-flash", "GLM-4 Flash（免费）", 0.0, 0.0, 131072, "official"),
             StaticModelDef("glm-5-2", "glm-5.2", "GLM-5.2", 1.11, 3.89, 1048576, "official"),
             StaticModelDef("glm-5-1", "glm-5.1", "GLM-5.1", 0.83, 3.33, 204800, "official"),
+            StaticModelDef("glm-5-3", "glm-5.3", "GLM-5.3（2026-08-14 新发布）", 2.0, 8.0, 1048576, "default"),
         ),
     ),
     # ── MiniMax（api 拉取，标准 OpenAI 结构）──────────────────────────────────

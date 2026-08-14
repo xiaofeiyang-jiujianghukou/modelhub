@@ -86,7 +86,7 @@ class TestProviderCrud:
         assert resp.status_code == 200
         data = resp.json()
         assert data["sync"]["status"] == "done"
-        assert data["sync"]["result"]["added"] == 3
+        assert data["sync"]["result"]["added"] == 4
 
         provider = data["id"]
         # 凭证加密存储（gcm:v1: 前缀），列表接口不返回明文
@@ -97,7 +97,7 @@ class TestProviderCrud:
         listing = (await client.get("/v1/admin/providers", headers=headers)).json()
         item = next(i for i in listing["data"] if i["id"] == provider)
         assert item["has_key"] is True
-        assert item["model_count"] == 3
+        assert item["model_count"] == 4
         assert "credentials" not in item
 
         # 模型入库
@@ -168,7 +168,7 @@ class TestProviderCrud:
         assert await db_session.get(ModelCatalog, "glm-5-1") is None
         assert await db_session.get(ModelCatalog, "glm-5-2") is not None
         assert await db_session.get(Provider, pid) is None
-        assert deleted["models"] == 2
+        assert deleted["models"] == 3
 
         # 通道也清理了
         chans = (await db_session.execute(select(RouteChannel).where(RouteChannel.provider_id == pid))).scalars().all()

@@ -62,13 +62,14 @@ def test_render_catalog_merge():
 
     keep = next(m for m in catalog["models"] if m["slug"] == "keep-model")
     assert keep["display_name"] == "【自定义】Keep"          # 自定义名称保留
-    assert keep["description"] == "用户备注"                  # 用户备注保留
+    assert keep["description"] == "[【自定义】Keep][keep-model]"  # 描述统一 [厂商][模型]
     assert keep["context_window"] == 131072                  # 上下文以网关为准更新
 
     new = next(m for m in catalog["models"] if m["slug"] == "new-model")
     assert new["display_name"] == "New"
     assert new["supports_parallel_tool_calls"] is True       # 模板字段补齐
     assert "supported_reasoning_levels" in new
+    assert "model_messages" in new                           # 0.147 必填 instructions_template
 
 
 @pytest.mark.asyncio
