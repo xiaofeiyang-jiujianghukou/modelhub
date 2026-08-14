@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     max_retries: int = 2               # 故障转移最大重试次数
     upstream_timeout_seconds: float = 30.0
     # Anthropic 协议层默认模型（claude-* 请求映射到该模型）
-    default_claude_model: str = "doubao-seed-2-0-pro"
+    default_claude_model: str = "deepseek-v4-flash"
 
     # ── Codex 模型目录（模型变化时自动重写，Codex 启动时加载最新清单）────────
     codex_catalog_path: Optional[str] = None   # 如 /home/xxx/.codex/model-catalog.local.json

@@ -44,7 +44,7 @@ class AnthropicRequest(BaseModel):
     model: str
     max_tokens: int = Field(..., ge=1)
     messages: list[AnthropicMessage]
-    system: Optional[str] = None
+    system: Optional[str | list[dict]] = None   # Claude Code 2.x 发送 content blocks 数组
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_p: Optional[float] = Field(default=None)
     stream: Optional[bool] = False
@@ -58,10 +58,15 @@ def _resolve_model(model_name: str) -> str:
     """
     模型名解析：
     1. 网关中已注册的模型 ID → 直接使用
-    2. claude-* 前缀（Claude 生态默认请求）→ 映射到网关默认模型
+    2. claude-* 前缀 / Claude Code 内置别名（opus/sonnet/haiku 等）→ 映射到网关默认模型
     """
-    if model_name.startswith("claude-"):
-        default = getattr(settings, "default_claude_model", None) or "doubao-seed-2-0-pro"
+    default = getattr(settings, "default_claude_model", None) or "doubao-seed-2-0-pro"
+    lower = model_name.lower()
+    if (
+        model_name.startswith("claude-")
+        or lower in ("opus", "sonnet", "haiku")
+        or lower.startswith(("opus[", "sonnet[", "haiku["))
+    ):
         logger.info("claude model {} mapped to {}", model_name, default)
         return default
     return model_name
@@ -69,29 +74,30 @@ def _resolve_model(model_name: str) -> str:
 
 # ── 请求转换（Anthropic → 内部 OpenAI 格式）─────────────────────────────────
 
+def _extract_text(content: str | list) -> str:
+    """提取纯文本：字符串原样；content block 列表拼接 text 块"""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            # image 等非文本块跳过
+        else:
+            parts.append(str(block))
+    return "".join(parts)
+
+
 def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
     """将 Anthropic 请求转换为 OpenAI 格式 payload"""
     messages = []
-    # system 提示词作为第一条 system 消息
+    # system 提示词作为第一条 system 消息（支持字符串或 content blocks 数组）
     if req.system:
-        messages.append({"role": "system", "content": req.system})
+        messages.append({"role": "system", "content": _extract_text(req.system)})
 
     for m in req.messages:
-        content = m.content
-        # content block 列表 → 提取纯文本（简化：拼接 text 块）
-        if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                    elif block.get("type") == "image":
-                        # 图片块暂不支持，跳过
-                        continue
-                else:
-                    text_parts.append(str(block))
-            content = "".join(text_parts)
-        messages.append({"role": m.role, "content": content})
+        messages.append({"role": m.role, "content": _extract_text(m.content)})
 
     payload: dict[str, Any] = {
         "model": model_name,
