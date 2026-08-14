@@ -34,13 +34,20 @@ class OpenAIProvider(BaseProvider):
         return httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False)
 
     async def health_check(self) -> bool:
-        """健康检查：请求 /models 端点验证连通性"""
+        """健康检查：请求 /models 端点验证连通性
+
+        - 2xx / 404（端点存在性差异）：连通正常 → True
+        - 401/403：API Key 无效 → False（避免"测试通过"假阳性）
+        - 其他 4xx：连通正常 → True；5xx/异常：False
+        """
         try:
             async with self._client() as client:
                 resp = await client.get(
                     f"{self.base_url}/models",
                     headers=self._headers(),
                 )
+                if resp.status_code in (401, 403):
+                    return False
                 return resp.status_code < 500
         except Exception:
             return False

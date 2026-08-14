@@ -192,10 +192,14 @@ class RouterService:
                     return gen, channel, provider_obj, None
                 else:
                     result = await adapter.chat_completions(channel.upstream_model, payload)
-                    # 触发故障转移的状态码：5xx 服务端错误 + 401/403 认证失败 + 429 限流/余额不足
                     sc = result.get("_status_code", 200)
-                    if sc >= 500 or sc in (401, 403, 429):
-                        # 保存上游错误详情（供透传给用户）
+                    if sc in (401, 403):
+                        # Key 无效/无权限：重试无意义，直接返回上游错误（不重试）
+                        _mark_channel_error(channel)
+                        await db.commit()
+                        return result, channel, provider_obj, None
+                    if sc >= 500 or sc == 429:
+                        # 触发故障转移：5xx 服务端错误 + 429 限流/余额不足
                         err_msg = result.get("error", {}).get("message", "upstream error")
                         last_error_info = {
                             "status_code": sc,
@@ -260,9 +264,14 @@ class RouterService:
 
             try:
                 result = await adapter.image_generations(channel.upstream_model, payload)
-                # 触发故障转移的状态码：5xx 服务端错误 + 401/403 认证失败 + 429 限流/余额不足
                 sc = result.get("_status_code", 200)
-                if sc >= 500 or sc in (401, 403, 429):
+                if sc in (401, 403):
+                    # Key 无效/无权限：重试无意义，直接返回上游错误（不重试）
+                    _mark_channel_error(channel)
+                    await db.commit()
+                    return result, channel, provider_obj, None
+                if sc >= 500 or sc == 429:
+                    # 触发故障转移：5xx 服务端错误 + 429 限流/余额不足
                     err_msg = result.get("error", {}).get("message", "upstream error")
                     last_error_info = {
                         "status_code": sc,
