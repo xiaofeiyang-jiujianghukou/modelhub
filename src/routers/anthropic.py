@@ -17,14 +17,15 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, ApiKey, ModelCatalog
+from src.models import User, ApiKey, ModelCatalog, Provider, RouteChannel
 from src.config import settings
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
@@ -259,16 +260,7 @@ async def count_tokens(req: CountTokensRequest):
     return {"input_tokens": estimated}
 
 
-@router.get("/models")
-async def anthropic_models(http_req: Request):
-    """Anthropic 模型列表端点（部分客户端启动时调用）"""
-    return {"data": [
-        {"type": "model", "id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5 (→ Gateway Default)", "created_at": "2026-01-01T00:00:00Z"},
-        {"type": "model", "id": "doubao-seed-2-0-pro", "display_name": "Doubao Seed 2.0 Pro", "created_at": "2026-01-01T00:00:00Z"},
-        {"type": "model", "id": "doubao-1-5-pro", "display_name": "Doubao 1.5 Pro", "created_at": "2026-01-01T00:00:00Z"},
-        {"type": "model", "id": "deepseek-chat", "display_name": "DeepSeek Chat", "created_at": "2026-01-01T00:00:00Z"},
-        {"type": "model", "id": "glm-4-flash", "display_name": "GLM-4 Flash", "created_at": "2026-01-01T00:00:00Z"},
-    ]}
+# 注：GET /v1/models 由 models_list 路由统一处理（带 anthropic-version 头时返回 Anthropic 格式）
 
 
 # ── 端点 ─────────────────────────────────────────────────────────────────────

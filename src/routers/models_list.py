@@ -3,7 +3,7 @@ GET /v1/models 模型列表接口
 返回当前所有可用模型及其定价信息
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -50,12 +50,13 @@ def _model_to_item(model: ModelCatalog) -> dict:
 
 
 @router.get("/models")
-async def list_models(db: AsyncSession = Depends(get_db)):
+async def list_models(http_req: Request, db: AsyncSession = Depends(get_db)):
     """
     获取所有可用模型列表
 
     兼容 OpenAI API 格式，额外添加 meta 字段包含定价信息
     可见性规则：模型至少有一条通道，其供应商满足 活跃 + 已配置 Key + 同步成功
+    带 anthropic-version 头（Claude Code）时返回 Anthropic 协议格式（/model 下拉数据源）
     """
     # 可用供应商：活跃 + 已配置 Key（解密判断）+ 同步成功
     from src.models import Provider, RouteChannel as _RC
@@ -90,6 +91,23 @@ async def list_models(db: AsyncSession = Depends(get_db)):
     alias_result = await db.execute(select(ModelAlias))
     aliases = alias_result.scalars().all()
     alias_map = {a.model_id: a.alias for a in aliases}
+
+    # Claude Code 场景（带 anthropic-version 头）→ Anthropic 协议格式
+    if http_req.headers.get("anthropic-version"):
+        return {
+            "data": [
+                {
+                    "type": "model",
+                    "id": m.id,
+                    "display_name": m.display_name or m.id,
+                    "created_at": m.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                for m in models
+            ],
+            "has_more": False,
+            "first_id": None,
+            "last_id": None,
+        }
 
     data = []
     for model in models:
