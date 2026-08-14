@@ -12,13 +12,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
 
 from src.config import settings
-from src.database import init_db, close_db, AsyncSessionLocal
+from src.database import init_db, close_db
 from src.middleware.auth import AuthMiddleware
 from src.middleware.rate_limit import RateLimitMiddleware
 from src.services.health import init_health_checker, start_health_checks, stop_health_checks
 
 # 导入路由
-from src.routers import models_list, chat, images, dashboard, auth, web, videos, anthropic, responses, providers
+from src.routers import models, chat, images, dashboard, auth, web, videos, anthropic, responses, providers
 
 
 # ── 应用生命周期 ───────────────────────────────────────────────────────────────
@@ -28,7 +28,13 @@ async def lifespan(app: FastAPI):
     """应用启动/关闭钩子"""
     # 启动时执行
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    from src.database import AsyncSessionLocal
     await init_db()
+    # seed 模型参考价/上下文（JSON → model_references 表，幂等，不覆盖界面修改）
+    from src.services import model_reference
+    async with AsyncSessionLocal() as db:
+        await model_reference.seed_from_json(db)
+        await db.commit()
     # 结构迁移（guarded ALTER，幂等）
     from scripts.migrate_db import run_db_migrations
     applied = await run_db_migrations()
@@ -108,7 +114,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── 路由挂载 ───────────────────────────────────────────────────────────────────
 
-app.include_router(models_list.router, prefix="/v1")
+app.include_router(models.router, prefix="/v1")
 app.include_router(chat.router, prefix="/v1")
 app.include_router(images.router, prefix="/v1")
 app.include_router(dashboard.router, prefix="/v1")

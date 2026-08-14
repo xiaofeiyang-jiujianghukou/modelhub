@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import get_db
-from src.models import ApiKey, Balance, User
+from src.db.models import ApiKey, Balance, User
 
 # ── 密码工具 ──────────────────────────────────────────────────────────────────
 
@@ -347,7 +347,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(status_code=e.status_code, content=e.detail)
             # JWT 有效：从数据库加载用户并设置 state
             from src.database import AsyncSessionLocal as _SessionLocal
-            from src.models import User
+            from src.db.models import User
             async with _SessionLocal() as db:
                 jwt_user = await db.get(User, jwt_payload["sub"])
                 if not jwt_user or not jwt_user.is_active:
@@ -364,7 +364,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.user = jwt_user
                 request.state.user_id = jwt_user.id
                 # JWT 登录态等价于该用户活跃 Key 发起请求（chat 等路由按 Key 归属计费/记日志）
-                from src.models import ApiKey as _ApiKey
+                from src.db.models import ApiKey as _ApiKey
                 from sqlalchemy import select as _select
                 _jwt_key_result = await db.execute(
                     _select(_ApiKey).where(
@@ -380,7 +380,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 查询数据库验证 API Key
         # 动态导入：便于测试时 monkeypatch 为测试库
         from src.database import AsyncSessionLocal as _SessionLocal
-        from src.models import ApiKey, User
+        from src.db.models import ApiKey, User
         from sqlalchemy import select
         import hashlib
 

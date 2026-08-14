@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.providers import build_provider
 from src.config import settings
 
@@ -54,17 +54,20 @@ class HealthChecker:
     async def _check_all_providers(self):
         """检查所有供应商的健康状态"""
         async with self.db_session_factory() as db:
-            # 获取所有活跃的路由通道
+            # 获取所有活跃的模型记录（厂商 + 模型名），过滤厂商 active
             result = await db.execute(
-                select(RouteChannel, Provider)
-                .join(Provider, RouteChannel.provider_id == Provider.id)
-                .where(RouteChannel.is_active == True)
-                .where(Provider.is_active == True)
+                select(Model).where(Model.is_active == True)  # noqa: E712
             )
-            rows = result.all()
-
-            for channel, provider in rows:
-                await self._check_channel(db, channel, provider)
+            models = result.scalars().all()
+            active_names = {
+                p.name for p in (await db.execute(select(Provider).where(Provider.is_active == True))).scalars().all()
+            }
+            for channel in models:
+                if channel.vendor not in active_names:
+                    continue
+                provider = await db.scalar(select(Provider).where(Provider.name == channel.vendor))
+                if provider:
+                    await self._check_channel(db, channel, provider)
 
     @staticmethod
     def _ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -75,7 +78,7 @@ class HealthChecker:
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
-    async def _check_channel(self, db, channel: RouteChannel, provider: Provider):
+    async def _check_channel(self, db, channel: Model, provider: Provider):
         """检查单个通道"""
         now = datetime.now(timezone.utc)
 
@@ -97,8 +100,8 @@ class HealthChecker:
             if is_healthy:
                 # 成功：更新状态为 healthy，重置错误计数（不依赖熔断计数）
                 await db.execute(
-                    update(RouteChannel)
-                    .where(RouteChannel.id == channel.id)
+                    update(Model)
+                    .where(Model.model == channel.model, Model.vendor == channel.vendor)
                     .values(
                         health_status="healthy",
                         last_checked_at=now,
@@ -109,8 +112,8 @@ class HealthChecker:
                 # 检查失败：仅标记 degraded，不累加熔断计数
                 # （熔断器由真实请求失败驱动，避免健康检查误熔断）
                 await db.execute(
-                    update(RouteChannel)
-                    .where(RouteChannel.id == channel.id)
+                    update(Model)
+                    .where(Model.model == channel.model, Model.vendor == channel.vendor)
                     .values(
                         health_status="degraded",
                         last_checked_at=now,
@@ -121,8 +124,8 @@ class HealthChecker:
         except Exception as e:
             # 异常：仅标记 degraded，不触发熔断
             await db.execute(
-                update(RouteChannel)
-                .where(RouteChannel.id == channel.id)
+                update(Model)
+                .where(Model.model == channel.model, Model.vendor == channel.vendor)
                 .values(
                     health_status="degraded",
                     last_checked_at=now,
@@ -130,7 +133,7 @@ class HealthChecker:
             )
             await db.commit()
 
-    async def _handle_error(self, db, channel: RouteChannel, now: datetime):
+    async def _handle_error(self, db, channel: Model, now: datetime):
         """处理检查失败"""
         channel.error_count += 1
         total_requests = channel.success_count + channel.error_count
@@ -143,8 +146,8 @@ class HealthChecker:
             # 触发熔断（冷却期使用 aware datetime）
             cooldown_seconds = settings.circuit_breaker_cooldown_seconds
             await db.execute(
-                update(RouteChannel)
-                .where(RouteChannel.id == channel.id)
+                update(Model)
+                .where(Model.model == channel.model, Model.vendor == channel.vendor)
                 .values(
                     health_status="circuit_open",
                     circuit_open_until=datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds),
@@ -154,8 +157,8 @@ class HealthChecker:
         elif error_rate >= threshold * 0.8:
             # 接近阈值，标记为 degraded
             await db.execute(
-                update(RouteChannel)
-                .where(RouteChannel.id == channel.id)
+                update(Model)
+                .where(Model.model == channel.model, Model.vendor == channel.vendor)
                 .values(
                     health_status="degraded",
                     last_checked_at=now,
@@ -164,8 +167,8 @@ class HealthChecker:
         else:
             # 仅更新计数
             await db.execute(
-                update(RouteChannel)
-                .where(RouteChannel.id == channel.id)
+                update(Model)
+                .where(Model.model == channel.model, Model.vendor == channel.vendor)
                 .values(
                     error_count=channel.error_count,
                     last_checked_at=now,

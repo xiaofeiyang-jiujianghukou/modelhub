@@ -22,10 +22,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from src.models import User, ApiKey, ModelCatalog
+from src.db.models import User, ApiKey, Model
 from src.config import settings
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
+from src.services.chat_tools import chat_tool, chat_tool_call_element, chat_tool_result
+from src.services.model_key import parse_model_key
 
 router = APIRouter(tags=["Responses"])
 
@@ -44,11 +46,18 @@ class ResponseInputMessage(BaseModel):
     - 普通消息: {type: message, role: user, content: [...]}
     - developer 指令: {type: message, role: developer, content: [...]}
     - additional_tools: {type: additional_tools, role: developer, tools: [...]}（无 content）
+    - function_call: {type: function_call, name, arguments, call_id}
+    - function_call_output: {type: function_call_output, call_id, output}
     """
     role: str = "user"
-    type: Optional[str] = None  # message | additional_tools | function_call 等
+    type: Optional[str] = None  # message | additional_tools | function_call | function_call_output
     content: Optional[list[ResponseContentBlock] | str] = None
     tools: Optional[list[dict]] = None  # additional_tools 的工具定义
+    name: Optional[str] = None          # function_call 工具名
+    arguments: Optional[str] = None     # function_call 参数（JSON 字符串）
+    call_id: Optional[str] = None       # function_call / function_call_output 的关联 id
+    output: Optional[Any] = None        # function_call_output 的工具执行结果
+    model_config = {"extra": "allow"}
 
 
 class ResponsesRequest(BaseModel):
@@ -59,11 +68,30 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
-    # 允许额外字段（tool_choice、reasoning、metadata 等），Codex 会发送，忽略即可
+    tools: Optional[list[dict]] = None          # Responses 顶层 tools（Codex 工具调用依赖）
+    tool_choice: Optional[Any] = None
+    # 允许额外字段（reasoning、metadata 等），Codex 会发送，忽略即可
     model_config = {"extra": "allow"}
 
 
 # ── 请求转换（Responses → 内部 OpenAI 格式）────────────────────────────────
+
+def _responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[list[dict]]:
+    """Responses 顶层 tools → chat tools（只保留 type=function 且有 name 的工具；namespace/web_search 等托管工具 DeepSeek 不支持，过滤）"""
+    if not tools:
+        return None
+    result = []
+    for t in tools:
+        if t.get("type") != "function":
+            continue  # namespace / web_search / 其他托管工具跳过
+        if "function" in t:
+            fn = t.get("function") or {}
+            if fn.get("name"):          # 已 chat 格式且 name 有效才透传
+                result.append(t)
+        elif t.get("name"):
+            result.append(chat_tool(t.get("name"), t.get("description", ""), t.get("parameters")))
+    return result or None
+
 
 def _to_openai_payload(req: ResponsesRequest) -> dict:
     """将 Responses API 请求转换为 chat/completions payload"""
@@ -73,18 +101,49 @@ def _to_openai_payload(req: ResponsesRequest) -> dict:
     if req.instructions:
         messages.append({"role": "system", "content": req.instructions})
 
-    # input → messages
+    # input → messages（含 function_call / function_call_output 多轮工具调用）
     if isinstance(req.input, str):
         messages.append({"role": "user", "content": req.input})
     else:
-        for item in req.input:
-            # additional_tools / function_call 等无 content 的特殊类型 → 跳过
-            if item.type and item.type != "message":
+        items = req.input
+        i = 0
+        while i < len(items):
+            item = items[i]
+            itype = item.type
+            # additional_tools 无 content → 跳过（工具定义走顶层 tools）
+            if itype == "additional_tools":
+                i += 1
                 continue
+            # 连续的 function_call → 合并成一个 assistant 消息（并行工具调用，DeepSeek 要求同一条 assistant）
+            if itype == "function_call":
+                calls = []
+                while i < len(items) and items[i].type == "function_call":
+                    fc = items[i]
+                    calls.append(chat_tool_call_element(
+                        fc.call_id or f"call_{uuid.uuid4().hex[:16]}",
+                        fc.name or "",
+                        fc.arguments or "{}",
+                    ))
+                    i += 1
+                messages.append({"role": "assistant", "content": None, "tool_calls": calls})
+                continue
+            # function_call_output → tool 消息（工具执行结果）
+            if itype == "function_call_output":
+                out = item.output
+                if isinstance(out, str):
+                    out_text = out
+                elif isinstance(out, (dict, list)):
+                    out_text = json.dumps(out, ensure_ascii=False)
+                else:
+                    out_text = str(out) if out is not None else ""
+                messages.append(chat_tool_result(item.call_id or "", out_text))
+                i += 1
+                continue
+            # message / developer
             content = item.content
             if content is None:
+                i += 1
                 continue
-            # developer 角色 → system（OpenAI chat 无 developer 角色）
             role = "system" if item.role == "developer" else item.role
             if isinstance(content, str):
                 messages.append({"role": role, "content": content})
@@ -94,6 +153,7 @@ def _to_openai_payload(req: ResponsesRequest) -> dict:
                     if block.type == "input_text" and block.text:
                         text_parts.append(block.text)
                 messages.append({"role": role, "content": "".join(text_parts)})
+            i += 1
 
     payload: dict[str, Any] = {
         "model": req.model,
@@ -106,17 +166,47 @@ def _to_openai_payload(req: ResponsesRequest) -> dict:
         payload["temperature"] = req.temperature
     if req.top_p is not None:
         payload["top_p"] = req.top_p
+    # 工具定义透传（Codex 复杂任务依赖 function_call）
+    chat_tools = _responses_tools_to_chat(req.tools)
+    if chat_tools:
+        payload["tools"] = chat_tools
+        if req.tool_choice is not None:
+            payload["tool_choice"] = req.tool_choice
     return payload
 
 
 # ── 响应转换（OpenAI 格式 → Responses 格式）────────────────────────────────
 
+def _chat_message_to_responses_output(message: dict) -> list[dict]:
+    """chat message → Responses output items（text message + function_call items）"""
+    output: list[dict] = []
+    text = message.get("content") or ""
+    if text:
+        output.append({
+            "type": "message",
+            "id": f"msg_{uuid.uuid4().hex[:24]}",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        })
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        output.append({
+            "type": "function_call",
+            "id": f"fc_{uuid.uuid4().hex[:24]}",
+            "call_id": tc.get("id", ""),
+            "name": fn.get("name", ""),
+            "arguments": fn.get("arguments", ""),
+            "status": "completed",
+        })
+    return output
+
+
 def _to_responses_response(result: dict, resp_id: str, model_name: str) -> dict:
     """将 chat/completions 响应转换为 Responses API 格式"""
     choices = result.get("choices", [])
-    text = ""
-    if choices:
-        text = choices[0].get("message", {}).get("content", "") or ""
+    message = choices[0].get("message", {}) if choices else {}
+    output = _chat_message_to_responses_output(message)
 
     usage = result.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
@@ -128,15 +218,13 @@ def _to_responses_response(result: dict, resp_id: str, model_name: str) -> dict:
         "created_at": int(time.time()),
         "status": "completed",
         "model": model_name,
-        "output": [
+        "output": output or [
             {
                 "type": "message",
                 "id": f"msg_{uuid.uuid4().hex[:24]}",
                 "role": "assistant",
                 "status": "completed",
-                "content": [
-                    {"type": "output_text", "text": text, "annotations": []}
-                ],
+                "content": [{"type": "output_text", "text": "", "annotations": []}],
             }
         ],
         "usage": {
@@ -154,33 +242,20 @@ def _responses_stream_events(
     resp_id: str,
     model_name: str,
 ) -> AsyncGenerator[str, None]:
-    """将 OpenAI chat 流式 SSE 转换为 Responses API 流式 SSE events"""
-    output_item_id = f"msg_{uuid.uuid4().hex[:24]}"
-    content_part_id = f"pc_{uuid.uuid4().hex[:16]}"
+    """将 OpenAI chat 流式 SSE 转换为 Responses API 流式 SSE events（含 function_call）"""
 
     async def wrapper():
         collected_text = ""
+        text_item: Optional[dict] = None  # {output_index, item_id, content_part_id}
+        tool_items: dict[int, dict] = {}  # openai_index -> {output_index, item_id, name, arguments}
+        next_output_index = 0
         try:
             # response.created
             yield "data: " + json.dumps({
                 "type": "response.created", "response": {"id": resp_id, "object": "response", "model": model_name, "status": "in_progress"},
             }) + "\n\n"
 
-            # response.output_item.added
-            yield "data: " + json.dumps({
-                "type": "response.output_item.added",
-                "output_index": 0,
-                "item": {"id": output_item_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []},
-            }) + "\n\n"
-
-            # response.content_part.added
-            yield "data: " + json.dumps({
-                "type": "response.content_part.added",
-                "item_id": output_item_id, "output_index": 0, "content_index": 0,
-                "part": {"type": "output_text", "text": "", "annotations": []},
-            }) + "\n\n"
-
-            # 逐 token 转发
+            # 逐 token 转发（文本 + 工具调用）
             async for line in gen:
                 if line.startswith("data: "):
                     data_str = line[6:].strip()
@@ -232,24 +307,82 @@ def _responses_stream_events(
                     if not choices:
                         continue
                     delta = choices[0].get("delta", {})
+
+                    # 文本 delta
                     content = delta.get("content", "")
                     if content:
+                        if text_item is None:
+                            text_item = {
+                                "output_index": next_output_index,
+                                "item_id": f"msg_{uuid.uuid4().hex[:24]}",
+                                "content_part_id": f"pc_{uuid.uuid4().hex[:16]}",
+                            }
+                            next_output_index += 1
+                            yield "data: " + json.dumps({
+                                "type": "response.output_item.added",
+                                "output_index": text_item["output_index"],
+                                "item": {"id": text_item["item_id"], "type": "message", "role": "assistant", "status": "in_progress", "content": []},
+                            }) + "\n\n"
+                            yield "data: " + json.dumps({
+                                "type": "response.content_part.added",
+                                "item_id": text_item["item_id"], "output_index": text_item["output_index"], "content_index": 0,
+                                "part": {"type": "output_text", "text": "", "annotations": []},
+                            }) + "\n\n"
                         collected_text += content
                         yield "data: " + json.dumps({
                             "type": "response.output_text.delta",
-                            "item_id": output_item_id, "output_index": 0, "content_index": 0,
+                            "item_id": text_item["item_id"], "output_index": text_item["output_index"], "content_index": 0,
                             "delta": content,
                         }) + "\n\n"
 
-            # 收尾 events（done 事件携带完整文本，Codex 依赖此字段）
-            for evt in [
-                {"type": "response.output_text.done", "item_id": output_item_id, "output_index": 0, "content_index": 0, "text": collected_text},
-                {"type": "response.content_part.done", "item_id": output_item_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": collected_text, "annotations": []}},
-                {"type": "response.output_item.done", "output_index": 0, "item": {"id": output_item_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": collected_text, "annotations": []}]}},
-                {"type": "response.completed", "response": {"id": resp_id, "object": "response", "model": model_name, "status": "completed"}},
-            ]:
-                yield "data: " + json.dumps(evt) + "\n\n"
+                    # 工具调用 delta（chat tool_calls → Responses function_call）
+                    for tc in delta.get("tool_calls") or []:
+                        oi = tc.get("index", 0)
+                        fn = tc.get("function") or {}
+                        if oi not in tool_items:
+                            tool_items[oi] = {
+                                "output_index": next_output_index,
+                                "item_id": f"fc_{uuid.uuid4().hex[:24]}",
+                                "call_id": tc.get("id", ""),   # 上游 tool_call id（reasoning_content 补回匹配用）
+                                "name": fn.get("name", ""),
+                                "arguments": "",
+                            }
+                            next_output_index += 1
+                            yield "data: " + json.dumps({
+                                "type": "response.output_item.added",
+                                "output_index": tool_items[oi]["output_index"],
+                                "item": {"id": tool_items[oi]["item_id"], "type": "function_call", "status": "in_progress",
+                                         "call_id": tool_items[oi]["call_id"], "name": tool_items[oi]["name"], "arguments": ""},
+                            }) + "\n\n"
+                        args_delta = fn.get("arguments", "")
+                        if args_delta:
+                            tool_items[oi]["arguments"] += args_delta
+                            yield "data: " + json.dumps({
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": tool_items[oi]["item_id"], "output_index": tool_items[oi]["output_index"],
+                                "delta": args_delta,
+                            }) + "\n\n"
 
+            # 收尾 events（done 事件携带完整文本/参数，Codex 依赖此字段）
+            if text_item is not None:
+                for evt in [
+                    {"type": "response.output_text.done", "item_id": text_item["item_id"], "output_index": text_item["output_index"], "content_index": 0, "text": collected_text},
+                    {"type": "response.content_part.done", "item_id": text_item["item_id"], "output_index": text_item["output_index"], "content_index": 0, "part": {"type": "output_text", "text": collected_text, "annotations": []}},
+                    {"type": "response.output_item.done", "output_index": text_item["output_index"], "item": {"id": text_item["item_id"], "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": collected_text, "annotations": []}]}},
+                ]:
+                    yield "data: " + json.dumps(evt) + "\n\n"
+
+            for tool in tool_items.values():
+                yield "data: " + json.dumps({
+                    "type": "response.output_item.done",
+                    "output_index": tool["output_index"],
+                    "item": {"id": tool["item_id"], "type": "function_call", "status": "completed",
+                             "call_id": tool.get("call_id", ""), "name": tool["name"], "arguments": tool["arguments"]},
+                }) + "\n\n"
+
+            yield "data: " + json.dumps({
+                "type": "response.completed", "response": {"id": resp_id, "object": "response", "model": model_name, "status": "completed"},
+            }) + "\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"responses stream error: {e}")
@@ -281,7 +414,13 @@ async def responses_endpoint(
 
     # 模型解析（含 Codex 官方模型名兜底映射）
     async with AsyncSessionLocal() as _db:
-        model_obj, actual_model_name = await ModelCatalog.resolve_or_default(_db, req.model)
+        try:
+            model_obj, actual_model_name = await Model.resolve_or_default(_db, req.model)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": f"Model '{req.model}' must be vendor/model format", "type": "invalid_request_error", "code": "invalid_model"}},
+            )
     if not model_obj:
         return JSONResponse(
             status_code=400,
@@ -346,7 +485,8 @@ async def responses_endpoint(
         completion_tokens = usage.get("completion_tokens", 0)
         total = prompt_tokens + completion_tokens
 
-        model_obj = await ModelCatalog.get_by_id_or_alias(db, model_name)
+        mid, _vendor = parse_model_key(model_name)
+        model_obj = await Model.get_by_model_and_vendor(db, mid, _vendor) if _vendor else None
         cost = 0.0
         if total > 0 and model_obj and model_obj.model_type == "llm":
             cost = calc_llm_cost(model_obj, prompt_tokens, completion_tokens)

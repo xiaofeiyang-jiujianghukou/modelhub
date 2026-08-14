@@ -41,6 +41,15 @@
   .btn-danger { background: #fc8181; color: white; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
   .hidden { display: none; }
+  .docs h4 { margin: 0 0 10px; font-size: 15px; }
+  .docs h5 { margin: 18px 0 8px; font-size: 13px; color: #555; }
+  .docs p, .docs li { font-size: 13px; color: #555; line-height: 1.7; }
+  .docs pre { background: #1a1a2e; color: #7df9ff; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 12px; overflow-x: auto; margin: 8px 0; line-height: 1.5; }
+  .docs ol { padding-left: 20px; }
+  .docs ol li { margin: 5px 0; }
+  .docs code { background: #f1f3f9; padding: 1px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+  .docs pre code { background: none; padding: 0; }
+  .docs .tip { background: #ebf8ff; border-left: 3px solid #3182ce; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13px; color: #2c5282; }
   .key-display {
     background: #1a1a2e; color: #7df9ff; padding: 12px; border-radius: 8px;
     font-family: monospace; font-size: 13px; word-break: break-all; margin: 12px 0;
@@ -48,6 +57,16 @@
   h3 { margin-bottom: 16px; font-size: 16px; }
   .flex-row { display: flex; gap: 12px; align-items: center; }
   input[type="text"] { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; flex: 1; }
+  .filter-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .filter-bar input, .filter-bar select {
+    padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px;
+    background: #fff; color: #333; outline: none; box-sizing: border-box;
+  }
+  .filter-bar input { flex: 1; min-width: 200px; max-width: 340px; }
+  .filter-bar input:focus, .filter-bar select:focus { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.12); }
+  .pagination { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-top: 14px; }
+  .pagination .info { font-size: 13px; color: #888; }
+  .pagination select { padding: 4px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: #fff; }
   .modal-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100;
     display: flex; align-items: center; justify-content: center;
@@ -61,13 +80,15 @@
 </head>
 <body>
 <div class="sidebar">
-  <h2>⚡ Gateway</h2>
-  <div class="sub">多模型编排网关</div>
+  <h2>⚡ 模枢 ModelHub</h2>
+  <div class="sub">多模型智能编排网关</div>
   <div class="nav-item active" data-tab="overview" onclick="switchNav('overview')">📊 概览</div>
   <div class="nav-item" data-tab="keys" onclick="switchNav('keys')">🔑 API Keys</div>
   <div class="nav-item" data-tab="models" onclick="switchNav('models')">🤖 模型</div>
   <div class="nav-item" data-tab="logs" onclick="switchNav('logs')">📜 日志</div>
   <div class="nav-item" data-tab="test" onclick="switchNav('test')">🧪 测试对话</div>
+  <div class="nav-item" data-tab="docs" onclick="switchNav('docs')">📖 接入文档</div>
+  <div class="nav-item hidden" id="nav-references" data-tab="references" onclick="switchNav('references')">💰 价格</div>
   <div class="nav-item hidden" id="nav-providers" data-tab="providers" onclick="switchNav('providers')">🔌 供应商</div>
   <div style="margin-top: 40px;">
     <button class="btn btn-danger" onclick="logout()" style="width:100%">退出登录</button>
@@ -113,10 +134,40 @@
   <div id="tab-models" class="hidden">
     <div class="card">
       <h3>可用模型</h3>
+      <div class="filter-bar">
+        <input type="search" id="model-search" name="model-search" autocomplete="off" placeholder="🔍 搜索模型 ID 或名称..." oninput="resetModelsPage(); loadModels()">
+        <select id="model-provider" onchange="resetModelsPage(); loadModels()">
+          <option value="">全部厂商</option>
+        </select>
+        <select id="currency-select" onchange="setCurrency(this.value)">
+          <option value="CNY">¥ 人民币</option>
+          <option value="USD">$ 美元</option>
+        </select>
+      </div>
       <table>
-        <thead><tr><th>模型 ID</th><th>类型</th><th>输入价(/1M)</th><th>输出价(/1M)</th><th>上下文</th><th>价格来源</th></tr></thead>
+        <thead><tr>
+          <th style="cursor:pointer" onclick="sortModels('id')">模型 ID ⇅</th>
+          <th>类型</th>
+          <th style="cursor:pointer" onclick="sortModels('input_price')">输入价(/1M) ⇅</th>
+          <th style="cursor:pointer" onclick="sortModels('output_price')">输出价(/1M) ⇅</th>
+          <th style="cursor:pointer" onclick="sortModels('context_window')">上下文 ⇅</th>
+          <th>价格来源</th>
+        </tr></thead>
         <tbody id="models-table"></tbody>
       </table>
+      <div class="pagination">
+        <span class="info" id="models-pagination"></span>
+        <div class="flex-row">
+          <span class="info">每页</span>
+          <select id="model-page-size" onchange="changePageSize(this.value)">
+            <option value="10" selected>10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+          <button class="btn btn-sm" onclick="prevModelsPage()">← 上一页</button>
+          <button class="btn btn-sm" onclick="nextModelsPage()">下一页 →</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -145,6 +196,107 @@
     </div>
   </div>
 
+  <!-- Docs -->
+  <div id="tab-docs" class="hidden">
+    <div class="card docs">
+      <h3>📖 接入文档</h3>
+      <p>网关兼容 OpenAI / Anthropic 双协议，Codex 与 Claude Code 均可像接入方舟/千问/混元一样，<b>只填 Base URL + Key 即可自动识别全部可用模型</b>（模型增删后客户端自动同步，无需改配置）。</p>
+      <table style="margin-top:12px">
+        <thead><tr><th>客户端/协议</th><th>Base URL</th><th>认证</th><th>模型列表</th></tr></thead>
+        <tbody>
+          <tr><td>OpenAI SDK（chat/completions）</td><td><code>http://localhost:8000/v1</code></td><td>Bearer Key</td><td>GET /v1/models</td></tr>
+          <tr><td>Codex（responses 协议）</td><td><code>http://localhost:8000/v1</code></td><td>Bearer Key</td><td>本地目录文件（网关自动维护）</td></tr>
+          <tr><td>Claude Code（Anthropic 协议）</td><td><code>http://localhost:8000</code></td><td>Bearer Key</td><td>启动时自动 GET /v1/models</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:10px">API Key 在左侧 <b>🔑 API Keys</b> 页创建（形如 <code>sk-...</code>）。</p>
+    </div>
+
+    <div class="card docs">
+      <h4>🤖 Codex 接入</h4>
+      <h5>方式一：cc-switch（推荐）</h5>
+      <ol>
+        <li>cc-switch 中添加供应商，类型选 <b>OpenAI Codex</b>，认证 Key 填网关的 <code>sk-...</code></li>
+        <li>配置（config）填下方 config.toml 内容（<code>model_catalog_json</code> 指向网关自动维护的目录文件）</li>
+        <li>切换到该供应商后重启 Codex，<code>/model</code> 即显示全部网关模型</li>
+      </ol>
+      <h5>方式二：手动配置（<code>~/.codex/</code>）</h5>
+      <ol>
+        <li>创建 <code>~/.codex/auth.json</code>（认证凭证）：<pre><code>{"OPENAI_API_KEY": "sk-你的Key"}</code></pre></li>
+        <li>创建 <code>~/.codex/config.toml</code>：<pre><code>model_provider = "custom"
+model = "deepseek-v4-flash"
+model_catalog_json = "/home/xiaofeiyang/.codex/model-catalog.local.json"
+
+[model_providers.custom]
+name = "modelhub"
+base_url = "http://localhost:8000/v1"
+wire_api = "responses"
+requires_openai_auth = true</code></pre></li>
+        <li>重启终端，运行 <code>codex --version</code> 验证；进入任意项目目录运行 <code>codex</code>，<code>/model</code> 即显示全部网关模型</li>
+      </ol>
+      <div class="tip">💡 模型目录文件由网关在模型变更时自动重写（含描述 <code>[厂商][模型名]</code>），Codex 每次启动加载最新清单——无需手工维护。</div>
+    </div>
+
+    <div class="card docs">
+      <h4>🧠 Claude Code 接入</h4>
+      <h5>方式一：cc-switch（推荐）</h5>
+      <ol>
+        <li>cc-switch 中添加供应商，类型选 <b>Claude Code</b>，环境变量填下方 6 项</li>
+        <li>切换到该供应商后<b>新开终端</b>启动 Claude Code，<code>/model</code> 即显示全部网关模型（含 <code>[厂商][模型名]</code> 描述）</li>
+      </ol>
+      <h5>方式二：手动编辑 <code>~/.claude/settings.json</code> 的 env</h5>
+      <pre><code>{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8000",
+    "ANTHROPIC_AUTH_TOKEN": "sk-你的Key",
+    "ANTHROPIC_MODEL": "claude-deepseek-v4-flash",
+    "CLAUDE_CODE_USE_GATEWAY": "1",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+  }
+}</code></pre>
+      <div class="tip">⚠️ <code>CLAUDE_CODE_USE_GATEWAY=1</code> 是激活模型发现的关键开关（仅设 DISCOVERY 无效）；启动后 banner 显示 <code>Cloud gateway</code> 即接入成功。</div>
+      <div class="tip">🧹 <b>切回其他供应商后的缓存残留</b>：Claude Code 2.1.232 会把网关发现的模型列表缓存进 <code>~/.claude.json</code>，切回 DeepSeek 等直连供应商时不清理，导致 <code>/model</code> 仍显示网关模型（这是客户端 bug，非网关问题）。<br><br><b>自动清理靠 <code>~/.claude_wrapper.sh</code></b>：这个文件由 <code>~/.bashrc</code> 里的 <code>source ~/.claude_wrapper.sh</code> 加载，定义了一个 <code>claude()</code> 包装函数——每次敲 <code>claude</code> 时，实际先执行清理、再启动真正的 claude，所以缓存自动被清空（幂等安全，切回网关会自动重新拉取）。这个 wrapper 同时负责<b>会话管理</b>：检测项目内的 <code>.claude-session</code>/<code>SESSION.md</code>，启动时用 <code>START_SESSION.md</code> 恢复上下文、退出时用 <code>CLOSE_SESSION.md</code> 自动保存进度到 <code>SESSION.md</code>。<br><br><b>手动清理</b>：<code>python scripts/clear_claude_model_cache.py</code>。</div>
+    </div>
+
+    <div class="card docs">
+      <h4>🐍 OpenAI SDK（Python）</h4>
+      <pre><code>from openai import OpenAI
+client = OpenAI(api_key="sk-你的Key", base_url="http://localhost:8000/v1")
+r = client.chat.completions.create(
+    model="deepseek-v4-flash",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(r.choices[0].message.content)</code></pre>
+    </div>
+
+    <div class="card docs">
+      <h4>❓ 常见问题</h4>
+      <ol>
+        <li><b>Claude Code /model 只显示几个内置模型？</b> —— 缺 <code>CLAUDE_CODE_USE_GATEWAY=1</code>（或未新开终端使 env 生效）；两个 CLAUDE_CODE 开关必须同时设置。</li>
+        <li><b>Codex /model 只有 gpt 系列？</b> —— <code>model_catalog_json</code> 未指向网关目录文件，或 cc-switch 当前活动供应商不是本网关。</li>
+        <li><b>为什么 Claude Code 里模型 ID 带 <code>claude-</code> 前缀？</b> —— 网关包装用于模型发现（Claude Code 只认 claude-/anthropic- 前缀），请求时自动映射回真实模型，直接选即可。</li>
+        <li><b>模型增删后要改配置吗？</b> —— 不用。Codex 启动加载最新目录文件；Claude Code 启动时自动拉取 /v1/models。</li>
+        <li><b>切回 DeepSeek 后 /model 还显示网关模型？</b> —— Claude Code 的缓存残留 bug，网关的 <code>claude()</code> 包装函数已自动清理；手动清跑 <code>python scripts/clear_claude_model_cache.py</code>。</li>
+        <li><b>支持哪些模型？</b> —— 见左侧 <b>🤖 模型</b> 页实时清单（含价格与上下文）。</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- References -->
+  <div id="tab-references" class="hidden">
+    <div class="card">
+      <div class="flex-row" style="justify-content:space-between">
+        <h3 style="margin-bottom:0">💰 模型参考价 / 上下文</h3>
+        <button class="btn btn-primary" onclick="openReferenceModal()">➕ 添加参考价</button>
+      </div>
+      <p style="font-size:12px;color:#888;margin-top:8px">模型官方核对价与上下文窗口。供应商同步时：上游能返回的自动覆盖，返回不了的用这里兜底（static 供应商的模型清单也来自这里）。改完点「同步」供应商即生效。</p>
+      <table style="margin-top:12px">
+        <thead><tr><th>模型 ID</th><th>厂商</th><th>输入价(/1M)</th><th>输出价(/1M)</th><th>上下文</th><th>价格来源</th><th>操作</th></tr></thead>
+        <tbody id="references-table"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Providers -->
   <div id="tab-providers" class="hidden">
     <div class="card">
@@ -166,6 +318,57 @@
 </div>
 
 <!-- 供应商编辑弹窗 -->
+<!-- 参考价编辑弹窗 -->
+<div id="ref-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h3 id="ref-modal-title">添加参考价</h3>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>模型 ID</label>
+      <input type="text" id="ref-model-id" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="如 deepseek-v4-pro">
+    </div>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>厂商 key（static 供应商清单归属用，可空）</label>
+      <input type="text" id="ref-vendor" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="如 ark-plan / glm">
+    </div>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>显示名</label>
+      <input type="text" id="ref-display-name" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="模型显示名">
+    </div>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>上游模型名（static 用，可空）</label>
+      <input type="text" id="ref-upstream" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="上游真实模型名">
+    </div>
+    <div class="flex-row" style="margin-bottom:12px">
+      <div style="flex:1;font-size:13px;color:#555">
+        <label>输入价(/1M USD)</label>
+        <input type="text" id="ref-input" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="如 0.14">
+      </div>
+      <div style="flex:1;font-size:13px;color:#555">
+        <label>输出价(/1M USD)</label>
+        <input type="text" id="ref-output" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="如 0.28">
+      </div>
+    </div>
+    <div class="flex-row" style="margin-bottom:12px">
+      <div style="flex:1;font-size:13px;color:#555">
+        <label>上下文窗口(tokens)</label>
+        <input type="text" id="ref-context" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="如 131072">
+      </div>
+      <div style="flex:1;font-size:13px;color:#555">
+        <label>价格来源</label>
+        <select id="ref-source" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-top:4px">
+          <option value="official">official（官方）</option>
+          <option value="default">default（默认）</option>
+          <option value="manual">manual（手工）</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex-row" style="justify-content:flex-end">
+      <button class="btn" onclick="closeReferenceModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveReference()">保存</button>
+    </div>
+  </div>
+</div>
+
 <div id="provider-modal" class="modal-overlay hidden">
   <div class="modal">
     <h3 id="pm-title">添加供应商</h3>
@@ -225,14 +428,18 @@ function switchNav(tab) {
   if (tab === 'models') loadModels();
   if (tab === 'logs') loadLogs();
   if (tab === 'test') loadTestData();
+  if (tab === 'references') loadReferences();
   if (tab === 'providers') loadProviders();
 }
 
-// 初始化管理员状态：供应商 tab 仅 admin 可见
+// 初始化管理员状态：供应商/价格 tab 仅 admin 可见
 async function initAdmin() {
   try {
     const me = await api('/dashboard/me');
-    if (me.is_admin) document.getElementById('nav-providers').classList.remove('hidden');
+    if (me.is_admin) {
+      document.getElementById('nav-providers').classList.remove('hidden');
+      document.getElementById('nav-references').classList.remove('hidden');
+    }
   } catch (e) { /* 非登录态由 api() 统一跳转 */ }
 }
 
@@ -283,21 +490,94 @@ async function revokeKey(id) {
   loadKeys();
 }
 
+let MODEL_SORT = '';      // 当前排序字段
+let MODEL_SORT_DIR = 1;   // 1 升序，-1 降序
+
+// ── 币种（默认人民币，可选美元；后端按 currency 参数换算返回，前端只加符号）──
+let CURRENCY = localStorage.getItem('currency') || 'CNY';
+
+function formatPrice(v) {
+  if (v == null) return '-';
+  return CURRENCY === 'CNY' ? '¥' + v : '$' + v;
+}
+
+function setCurrency(c) {
+  CURRENCY = c;
+  localStorage.setItem('currency', c);
+  const modelsTab = document.getElementById('tab-models');
+  const refsTab = document.getElementById('tab-references');
+  if (modelsTab && !modelsTab.classList.contains('hidden')) loadModels();
+  if (refsTab && !refsTab.classList.contains('hidden')) loadReferences();
+}
+let MODEL_PAGE = 0;
+let MODEL_PAGE_SIZE = 10;
+
 async function loadModels() {
   // 使用 JWT 登录态获取模型列表（网关支持 JWT 认证）
-  const data = await api('/models').catch(() => ({}));
+  const searchEl = document.getElementById('model-search');
+  // 兜底：浏览器 autofill 邮箱（含 @）误填搜索框时自动清空，避免列表被 email 过滤成空
+  if (searchEl.value && searchEl.value.includes('@')) searchEl.value = '';
+  const search = searchEl.value.trim();
+  const provider = document.getElementById('model-provider').value;
+  const params = new URLSearchParams();
+  if (search) params.set('search', search);
+  if (provider) params.set('provider', provider);
+  if (MODEL_SORT) params.set('sort', (MODEL_SORT_DIR === -1 ? '-' : '') + MODEL_SORT);
+  params.set('limit', String(MODEL_PAGE_SIZE));
+  params.set('offset', String(MODEL_PAGE * MODEL_PAGE_SIZE));
+  params.set('currency', CURRENCY);
+  const qs = params.toString();
+  const data = await api('/models' + (qs ? '?' + qs : '')).catch(() => ({}));
   const models = data.data || [];
+  const total = data.total || 0;
   const tbody = document.getElementById('models-table');
   tbody.innerHTML = models.map(m => `
     <tr>
-      <td><code>${m.id}</code></td>
+      <td><code>${m.id}</code><br><span style="font-size:11px;color:#888">${m.meta && m.meta.vendor || '-'}</span></td>
       <td>${m.meta && m.meta.type || 'llm'}</td>
-      <td>$${m.meta && m.meta.input_price_per_1m_tokens || '-'}</td>
-      <td>$${m.meta && m.meta.output_price_per_1m_tokens || '-'}</td>
-      <td>${m.meta && m.meta.context_window || '-'}</td>
+      <td>${formatPrice(m.meta && m.meta.input_price_per_1m_tokens)}</td>
+      <td>${formatPrice(m.meta && m.meta.output_price_per_1m_tokens)}</td>
+      <td>${m.meta && m.meta.context_window != null ? m.meta.context_window : '-'}</td>
       <td>${priceBadge(m.meta && m.meta.price_source)}</td>
-    </tr>`).join('');
+    </tr>`).join('') || '<tr><td colspan="6" style="color:#888">无匹配模型</td></tr>';
+
+  const start = total === 0 ? 0 : MODEL_PAGE * MODEL_PAGE_SIZE + 1;
+  const end = Math.min((MODEL_PAGE + 1) * MODEL_PAGE_SIZE, total);
+  document.getElementById('models-pagination').textContent =
+    total === 0 ? '共 0 个模型' : `共 ${total} 个模型，显示 ${start}-${end}`;
+
+  fillProviderSelect(data.providers || []);
 }
+
+function fillProviderSelect(providers) {
+  const sel = document.getElementById('model-provider');
+  if (!providers || !providers.length) return;
+  const existing = new Set([...sel.options].map(o => o.value));
+  providers.forEach(p => {
+    if (!existing.has(p.key)) {
+      const opt = document.createElement('option');
+      opt.value = p.key;
+      opt.textContent = p.display_name || p.key;
+      sel.appendChild(opt);
+    }
+  });
+}
+
+function sortModels(field) {
+  if (MODEL_SORT === field) {
+    MODEL_SORT_DIR = -MODEL_SORT_DIR;
+  } else {
+    MODEL_SORT = field;
+    MODEL_SORT_DIR = 1;
+  }
+  MODEL_PAGE = 0;
+  loadModels();
+}
+
+function resetModelsPage() { MODEL_PAGE = 0; }
+function changePageSize(v) { MODEL_PAGE_SIZE = parseInt(v, 10); MODEL_PAGE = 0; loadModels(); }
+function prevModelsPage() { if (MODEL_PAGE > 0) { MODEL_PAGE--; loadModels(); } }
+function nextModelsPage() { MODEL_PAGE++; loadModels(); }
 
 async function loadLogs() {
   const data = await api('/dashboard/logs?limit=50');
@@ -323,7 +603,7 @@ let PM_REGISTRY = [];
 function priceBadge(source) {
   if (source === 'official') return '<span class="badge success">官方</span>';
   if (source === 'manual') return '<span class="badge pending">手动</span>';
-  return '<span class="badge">默认</span>';
+  return '<span class="badge">未定价</span>';
 }
 
 function syncStatusBadge(status) {
@@ -333,25 +613,110 @@ function syncStatusBadge(status) {
   return '<span class="badge">-</span>';
 }
 
+// ── 模型参考价 / 上下文管理 ──
+let REF_EDIT_ID = null;
+
+async function loadReferences() {
+  const data = await api('/admin/references?currency=' + CURRENCY).catch(() => ({}));
+  const tbody = document.getElementById('references-table');
+  tbody.innerHTML = (data.data || []).map(r => `
+    <tr>
+      <td><code>${r.model_id}</code></td>
+      <td>${r.vendor || '-'}</td>
+      <td>${formatPrice(r.input_price)}</td>
+      <td>${formatPrice(r.output_price)}</td>
+      <td>${r.context_window != null ? r.context_window : '-'}</td>
+      <td>${priceBadge(r.price_source)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" onclick="editReference('${r.model_id}')">编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteReference('${r.model_id}')">删除</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" style="color:#888">暂无参考数据</td></tr>';
+}
+
+async function editReference(modelId) {
+  const data = await api('/admin/references?currency=' + CURRENCY);
+  const r = (data.data || []).find(x => x.model_id === modelId);
+  if (!r) return;
+  REF_EDIT_ID = modelId;
+  document.getElementById('ref-model-id').value = r.model_id;
+  document.getElementById('ref-model-id').disabled = true;
+  document.getElementById('ref-vendor').value = r.vendor || '';
+  document.getElementById('ref-display-name').value = r.display_name || '';
+  document.getElementById('ref-upstream').value = r.upstream_model || '';
+  document.getElementById('ref-input').value = r.input_price ?? '';
+  document.getElementById('ref-output').value = r.output_price ?? '';
+  document.getElementById('ref-context').value = r.context_window ?? '';
+  document.getElementById('ref-source').value = r.price_source || 'manual';
+  document.getElementById('ref-modal-title').textContent = '编辑参考价';
+  document.getElementById('ref-modal').classList.remove('hidden');
+}
+
+function openReferenceModal() {
+  REF_EDIT_ID = null;
+  ['ref-model-id','ref-vendor','ref-display-name','ref-upstream','ref-input','ref-output','ref-context'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('ref-model-id').disabled = false;
+  document.getElementById('ref-source').value = 'manual';
+  document.getElementById('ref-modal-title').textContent = '添加参考价';
+  document.getElementById('ref-modal').classList.remove('hidden');
+}
+
+function closeReferenceModal() {
+  document.getElementById('ref-modal').classList.add('hidden');
+}
+
+async function saveReference() {
+  const body = {
+    model_id: document.getElementById('ref-model-id').value.trim(),
+    vendor: document.getElementById('ref-vendor').value.trim() || null,
+    display_name: document.getElementById('ref-display-name').value.trim() || null,
+    upstream_model: document.getElementById('ref-upstream').value.trim() || null,
+    input_price: document.getElementById('ref-input').value === '' ? null : parseFloat(document.getElementById('ref-input').value),
+    output_price: document.getElementById('ref-output').value === '' ? null : parseFloat(document.getElementById('ref-output').value),
+    context_window: document.getElementById('ref-context').value === '' ? null : parseInt(document.getElementById('ref-context').value, 10),
+    price_source: document.getElementById('ref-source').value,
+    currency: CURRENCY,
+  };
+  if (!body.model_id) { alert('模型 ID 不能为空'); return; }
+  await api('/admin/references', 'POST', body);
+  closeReferenceModal();
+  loadReferences();
+}
+
+async function deleteReference(modelId) {
+  if (!confirm(`删除参考价 ${modelId}？`)) return;
+  await api('/admin/references/' + encodeURIComponent(modelId), 'DELETE');
+  loadReferences();
+}
+
 async function loadProviders() {
   const data = await api('/admin/providers');
   const tbody = document.getElementById('providers-table');
   tbody.innerHTML = (data.data || []).map(p => `
     <tr>
-      <td><strong>${p.name}</strong></td>
+      <td><strong>${p.display_name || p.name}</strong><br><code style="font-size:11px">${p.name}</code></td>
       <td><code style="font-size:11px">${p.base_url}</code></td>
       <td><span class="badge ${p.has_key ? 'success' : 'error'}">${p.has_key ? '已配置' : '无 Key'}</span></td>
       <td>${p.model_count}</td>
       <td style="font-size:12px">${p.last_synced_at ? new Date(p.last_synced_at * 1000).toLocaleString() : '从未'}</td>
-      <td>${syncStatusBadge(p.last_sync_status)}</td>
+      <td>${p.is_active ? '<span class="badge success">启用</span>' : '<span class="badge error">已禁用</span>'} ${syncStatusBadge(p.last_sync_status)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm" onclick="openProviderModal('${p.id}')">编辑</button>
         <button class="btn btn-sm" onclick="syncProvider('${p.id}')">同步</button>
         <button class="btn btn-sm" onclick="testProvider('${p.id}')">测试</button>
+        <button class="btn ${p.is_active ? 'btn-danger' : 'btn-primary'} btn-sm" onclick="toggleProvider('${p.id}', ${p.is_active})">${p.is_active ? '禁用' : '启用'}</button>
         <button class="btn btn-danger btn-sm" onclick="deleteProvider('${p.id}', '${p.name}', ${p.model_count})">删除</button>
       </td>
     </tr>`).join('');
   if (!(data.data || []).length) tbody.innerHTML = '<tr><td colspan="7" style="color:#888">暂无供应商，点击"添加供应商"开始配置</td></tr>';
+}
+
+async function toggleProvider(id, currentActive) {
+  const action = currentActive ? '禁用' : '启用';
+  if (!confirm(`确定${action}该供应商？${currentActive ? '禁用后其独占模型将从列表隐藏。' : ''}`)) return;
+  await api('/admin/providers/' + id, 'PUT', { is_active: !currentActive });
+  loadProviders();
+  loadModels();
 }
 
 async function openProviderModal(id) {
@@ -376,7 +741,7 @@ async function openProviderModal(id) {
       PM_REGISTRY = reg.data || [];
     }
     nameSelect.innerHTML = PM_REGISTRY.map(r =>
-      `<option value="${r.key}" data-url="${r.default_base_url}">${r.display_name}${r.model_source === 'static' ? '（内置模型清单）' : ''}</option>`).join('');
+      `<option value="${r.key}" data-url="${r.default_base_url}">${r.display_name}</option>`).join('');
     // 切换供应商类型时同步默认 Base URL（官方地址，仅官方更换时才改）
     nameSelect.onchange = syncBaseUrlFromSelect;
     syncBaseUrlFromSelect();
@@ -434,7 +799,10 @@ async function syncProvider(id) {
   resultEl.textContent = '同步中...';
   try {
     const r = await api('/admin/providers/' + id + '/sync', 'POST');
-    if (r.status === 'error') {
+    if (r.error || r.detail) {
+      const msg = r.error?.message || r.detail?.message || '同步失败';
+      resultEl.innerHTML = `<span style="color:#e53e3e">❌ ${msg}</span>`;
+    } else if (r.status === 'error') {
       resultEl.innerHTML = `<span style="color:#e53e3e">❌ 同步失败：${(r.errors || []).join('; ')}</span>`;
     } else {
       resultEl.innerHTML = `✅ 新增 <b>${r.added}</b> 个模型，更新 <b>${r.updated}</b> 个，跳过 <b>${r.skipped}</b> 个`;
@@ -451,9 +819,14 @@ async function testProvider(id) {
   resultEl.textContent = '测试中...';
   try {
     const r = await api('/admin/providers/' + id + '/test', 'POST');
-    resultEl.innerHTML = r.ok
-      ? `<span style="color:#38a169">✅ ${r.message}</span>`
-      : `<span style="color:#e53e3e">❌ ${r.message}</span>`;
+    if (r.error || r.detail) {
+      const msg = r.error?.message || r.detail?.message || '测试失败';
+      resultEl.innerHTML = `<span style="color:#e53e3e">❌ ${msg}</span>`;
+    } else {
+      resultEl.innerHTML = r.ok
+        ? `<span style="color:#38a169">✅ ${r.message}</span>`
+        : `<span style="color:#e53e3e">❌ ${r.message}</span>`;
+    }
   } catch (e) {
     resultEl.innerHTML = `<span style="color:#e53e3e">❌ ${e.error?.message || '测试失败'}</span>`;
   }
@@ -513,6 +886,11 @@ const initialTab = (location.hash || '#overview').slice(1);
 switchNav(document.getElementById('tab-' + initialTab) ? initialTab : 'overview');
 // 管理员状态（供应商 tab 门控）
 initAdmin();
+// 同步币种下拉选中值（localStorage 持久化）
+(function () {
+  const s = document.getElementById('currency-select');
+  if (s) s.value = CURRENCY;
+})();
 </script>
 </body>
 </html>

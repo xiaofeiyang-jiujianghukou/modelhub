@@ -31,10 +31,10 @@
 - ✅ `src/main.py` - 应用入口，路由挂载，中间件注册
 - ✅ `src/config.py` - Pydantic Settings 配置管理
 - ✅ `src/database.py` - 异步数据库连接与会话管理
-- ✅ `src/models.py` - SQLAlchemy ORM 数据模型
+- ✅ `src/db/models.py` - SQLAlchemy ORM 数据模型
 
 ### 路由层
-- ✅ `src/routers/models_list.py` - GET /v1/models
+- ✅ `src/routers/models.py` - GET /v1/models
 - ✅ `src/routers/chat.py` - POST /v1/chat/completions
 - ✅ `src/routers/images.py` - POST /v1/images/generations
 - ✅ `src/routers/dashboard.py` - GET /v1/dashboard/balance

@@ -47,6 +47,7 @@ class ProviderSpec:
     exclude_patterns: Tuple[str, ...] = ()   # 非 chat 模型过滤
     known_prices: Tuple[Tuple[str, float, float], ...] = ()  # (模型ID, 输入价, 输出价) 官方文档核对价
     known_contexts: Tuple[Tuple[str, int], ...] = ()  # (模型ID, 上下文窗口) 官方文档核对值
+    model_id_map: Tuple[Tuple[str, str], ...] = ()  # (上游模型ID, 网关统一ID) 同名模型归一化（如百炼 glm-5.2 → glm-5-2）
 
 
 def _excluded(model_id: str, patterns: Tuple[str, ...]) -> bool:
@@ -61,54 +62,28 @@ def _excluded(model_id: str, patterns: Tuple[str, ...]) -> bool:
 
 _PROVIDER_SPECS = [
     # ── DeepSeek（api 拉取，标准 OpenAI 结构）────────────────────────────────
-    # 官方定价页 api-docs.deepseek.com/zh-cn/quick_start/pricing（元/1M，按 7.2 折算 USD）：
-    # v4-flash 输入 1 元/输出 2 元 → 0.14/0.28；v4-pro 输入 3 元/输出 6 元 → 0.42/0.83
-    # 上下文：官方文档标注 V4 系列 1M（api-docs.deepseek.com 快速上手）
+    # 价格/上下文兜底值见 config/model_reference.json → model_references 表
     ProviderSpec(
         key="deepseek", display_name="DeepSeek",
         default_base_url="https://api.deepseek.com/v1",
-        known_prices=(
-            ("deepseek-v4-flash", 0.14, 0.28),
-            ("deepseek-v4-pro", 0.42, 0.83),
-        ),
-        known_contexts=(
-            ("deepseek-v4-flash", 1048576),
-            ("deepseek-v4-pro", 1048576),
-        ),
     ),
-    # ── 火山方舟 Coding Plan（无 /models 端点，静态清单；模型名直填不能带日期）──
-    # 计费机制：套餐按"次数"扣额度（token 折算），无按量单价；下方价格为官方按量参考价
-    # （方舟官方按量价优先，未查到的用原厂官方价，均按 7.2 汇率折算 USD）
-    # 上下文：官方套餐概览（docs/82379/2366394 与模型列表页 1330310）
+    # ── 火山方舟 Coding Plan（无 /models 端点，静态清单）──
+    # 模型清单 + 价格 + 上下文见 config/model_reference.json（数据与代码分离，变更只改 JSON）
     ProviderSpec(
-        key="ark-plan", display_name="火山方舟 Coding Plan",
+        key="ark", display_name="方舟",
         default_base_url="https://ark.cn-beijing.volces.com/api/coding/v1",
         model_source="static",
-        static_models=(
-            StaticModelDef("ark-doubao-seed-2-1-turbo", "doubao-seed-2-1-turbo-260628", "Doubao Seed 2.1 Turbo (方舟)", 0.42, 2.08, 262144, "official"),
-            StaticModelDef("ark-doubao-seed-2-0-lite", "doubao-seed-2-0-lite-260428", "Doubao Seed 2.0 Lite (方舟)", 0.08, 0.5, 262144, "official"),
-            StaticModelDef("ark-glm-5-2", "glm-5-2-260617", "GLM-5.2 (方舟)", 1.11, 3.89, 1048576, "official"),
-            StaticModelDef("ark-deepseek-v4-pro", "deepseek-v4-pro-260425", "DeepSeek V4 Pro (方舟)", 0.42, 0.83, 1048576, "official"),
-            StaticModelDef("ark-deepseek-v4-flash", "deepseek-v4-flash-260425", "DeepSeek V4 Flash (方舟)", 0.14, 0.28, 1048576, "official"),
-            StaticModelDef("ark-minimax-m3", "minimax-m3", "MiniMax M3 (方舟)", 0.29, 1.17, 524288, "official"),
-            StaticModelDef("ark-kimi-k2-7-code", "kimi-k2-7-code", "Kimi K2.7 Code (方舟)", 0.9, 3.75, 262144, "official"),
-            StaticModelDef("ark-code-latest", "ark-code-latest", "ARK Auto (方舟智能路由)", 2.0, 8.0, 131072, "default"),
-        ),
     ),
     # ── 腾讯混元（无 /v1/models，静态清单）─────────────────────────────────────
     # 注意：4 个旧模型已从现行官方文档移除（迁移 TokenHub，停止新购）；价格为历史官方公告价
     # （元/1M，按 7.2 折算 USD）：TurboS 0.8/2、Turbo 15/50（2024-09 发布价）、Pro 30/100（2024-05 降价公告）、Lite 免费
     # 上下文：TurboS 最大输入 32K/输出 16K；Turbo 28K/4K；Pro 32K 长文/28K/4K；Lite 256K（官方公告/产品页）
+    # 暂时不接混元（不划算）——static 清单清空，后续接入时再补模型
     ProviderSpec(
-        key="hunyuan", display_name="腾讯混元",
+        key="hunyuan", display_name="混元",
         default_base_url="https://api.hunyuan.cloud.tencent.com/v1",
         model_source="static",
-        static_models=(
-            StaticModelDef("hunyuan-turbos-latest", "hunyuan-turbos-latest", "混元 TurboS", 0.11, 0.28, 32768, "official"),
-            StaticModelDef("hunyuan-turbo", "hunyuan-turbo", "混元 Turbo", 2.08, 6.94, 28672, "official"),
-            StaticModelDef("hunyuan-pro", "hunyuan-pro", "混元 Pro", 4.17, 13.89, 32768, "official"),
-            StaticModelDef("hunyuan-lite", "hunyuan-lite", "混元 Lite（免费）", 0.0, 0.0, 262144, "official"),
-        ),
+        static_models=(),
     ),
     # ── 阿里百炼 Token Plan（套餐端点，GET /models 可用，api 拉取）────────────────
     # token-plan.cn-beijing.maas.aliyuncs.com 为 Token Plan 订阅套餐专用端点（Key 为 sk-sp- 前缀）
@@ -116,30 +91,28 @@ _PROVIDER_SPECS = [
     # 套餐按订阅计费无按量单价 → 拉取后标 default 价
     # 过滤：wan2.7 图像、qwen-audio 音频（非文本 LLM）
     ProviderSpec(
-        key="bailian", display_name="阿里百炼 Token Plan",
+        key="bailian", display_name="百炼",
         default_base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         model_source="api",
         exclude_patterns=("wan2.7", "qwen-audio", "audio"),
+        # 百炼镜像同名模型归一化到主模型（统一 ID + 百炼通道）
+        model_id_map=(
+            ("deepseek-v4-flash-0731", "deepseek-v4-flash"),
+        ),
     ),
     # ── 月之暗面 Kimi（api 拉取，OpenAI 结构 + 能力字段）──────────────────────
+    # 过滤：moonshot-v1-* 老系列（已被 kimi-k2.x/k3 取代）、kimi-k2.5/k2.6 旧版
     ProviderSpec(
-        key="moonshot", display_name="月之暗面 Kimi",
+        key="moonshot", display_name="月之暗面",
         default_base_url="https://api.moonshot.cn/v1",
+        exclude_patterns=("moonshot-v1-", "kimi-k2.5", "kimi-k2.6"),
     ),
-    # ── 智谱 GLM（无 /models 端点，静态清单，官方文档价）──────────────────────
-    # 官方定价页 open.bigmodel.cn/pricing（元/1M，按 7.2 折算 USD）：
-    # glm-4-flash 免费（128K）；glm-5.2 8/28 元（1M 上下文）；glm-5.1 6/24 元（<32K 档，200K 上下文）
-    # glm-5.3（2026-08-14 发布）：1M 上下文/128K 输出，API 按量价未公布 → 默认价待官方定价
+    # ── 智谱 GLM（无 /models 端点，静态清单）──────────────────────
+    # 模型清单 + 价格 + 上下文见 config/model_reference.json → model_references 表
     ProviderSpec(
-        key="glm", display_name="智谱 GLM",
+        key="glm", display_name="智谱",
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
         model_source="static",
-        static_models=(
-            StaticModelDef("glm-4-flash", "glm-4-flash", "GLM-4 Flash（免费）", 0.0, 0.0, 131072, "official"),
-            StaticModelDef("glm-5-2", "glm-5.2", "GLM-5.2", 1.11, 3.89, 1048576, "official"),
-            StaticModelDef("glm-5-1", "glm-5.1", "GLM-5.1", 0.83, 3.33, 204800, "official"),
-            StaticModelDef("glm-5-3", "glm-5.3", "GLM-5.3（2026-08-14 新发布）", 2.0, 8.0, 1048576, "default"),
-        ),
     ),
     # ── MiniMax（api 拉取，标准 OpenAI 结构）──────────────────────────────────
     ProviderSpec(
@@ -148,7 +121,7 @@ _PROVIDER_SPECS = [
     ),
     # ── OpenAI ChatGPT（api 拉取，过滤非 chat 模型）───────────────────────────
     ProviderSpec(
-        key="openai", display_name="OpenAI ChatGPT",
+        key="openai", display_name="OpenAI",
         default_base_url="https://api.openai.com/v1",
         exclude_patterns=(
             "text-embedding", "whisper", "tts", "gpt-image", "dall-e",
@@ -158,7 +131,7 @@ _PROVIDER_SPECS = [
     ),
     # ── Anthropic Claude（api 拉取，专用解析 + after_id 分页）─────────────────
     ProviderSpec(
-        key="anthropic", display_name="Anthropic Claude",
+        key="anthropic", display_name="Anthropic",
         default_base_url="https://api.anthropic.com",
         auth_type="x_api_key",
         adapter="anthropic",

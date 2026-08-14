@@ -1,0 +1,24 @@
+{
+  "_comment": "模型官方参考价与上下文窗口。价格存「原始币种+金额」（currency 字段），官方人民币定价存 CNY 整数（如 DeepSeek 1/2 元），官方美元定价存 USD；跨币种显示时按汇率实时换算（config.py usd_to_cny_rate=7.2）。price_source: official=官方文档价 | default=网关默认价。",
+  "static_models": {
+    "ark": [
+      {"id": "doubao-seed-2-1-turbo", "upstream_model": "doubao-seed-2-1-turbo-260628", "display_name": "Doubao Seed 2.1 Turbo (方舟)", "input_price": 0.42, "output_price": 2.08, "currency": "USD", "context_window": 262144, "price_source": "official"},
+      {"id": "doubao-seed-2-0-lite", "upstream_model": "doubao-seed-2-0-lite-260428", "display_name": "Doubao Seed 2.0 Lite (方舟)", "input_price": 0.08, "output_price": 0.5, "currency": "USD", "context_window": 262144, "price_source": "official"},
+      {"id": "minimax-m3", "upstream_model": "minimax-m3", "display_name": "MiniMax M3 (方舟)", "input_price": 0.29, "output_price": 1.17, "currency": "USD", "context_window": 524288, "price_source": "official"}
+    ],
+    "glm": [
+      {"id": "glm-4-flash", "upstream_model": "glm-4-flash", "display_name": "GLM-4 Flash（免费）", "input_price": 0.0, "output_price": 0.0, "currency": "CNY", "context_window": 131072, "price_source": "official"},
+      {"id": "glm-5.2", "upstream_model": "glm-5.2", "display_name": "GLM-5.2", "input_price": 8.0, "output_price": 28.0, "currency": "CNY", "context_window": 1048576, "price_source": "official"},
+      {"id": "glm-5.3", "upstream_model": "glm-5.3", "display_name": "GLM-5.3（2026-08-14 新发布）", "input_price": null, "output_price": null, "currency": "CNY", "context_window": 1048576, "price_source": "default"}
+    ],
+    "hunyuan": []
+  },
+  "reference": {
+    "deepseek-v4-flash": {"input_price": 1.0, "output_price": 2.0, "currency": "CNY", "context_window": 1048576, "price_source": "official"},
+    "deepseek-v4-pro": {"input_price": 3.0, "output_price": 6.0, "currency": "CNY", "context_window": 1048576, "price_source": "official"},
+    "qwen3.8-max": {"context_window": 983616},
+    "qwen3.7-max": {"context_window": 983616},
+    "qwen3.7-plus": {"context_window": 983616},
+    "qwen3.6-flash": {"context_window": 983616}
+  }
+}

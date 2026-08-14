@@ -13,8 +13,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.models import (
-    ApiKey, Balance, Base, ModelCatalog, Provider, RouteChannel, User,
+from src.db.models import (
+    ApiKey, Balance, Base, Model, Provider, User,
 )
 from src.middleware.auth import _generate_api_key, _hash_api_key, _key_prefix
 
@@ -78,6 +78,16 @@ async def db_session(db_session_factory) -> AsyncGenerator[AsyncSession, None]:
 
 # ── 种子数据 ─────────────────────────────────────────────────────────────────
 
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_model_references(db_session_factory):
+    """seed model_references 表（static 供应商清单 + 官方参考价/上下文），所有测试可用"""
+    from src.services import model_reference
+    async with db_session_factory() as db:
+        await model_reference.seed_from_json(db)
+        await db.commit()
+    yield
+
+
 @pytest_asyncio.fixture
 async def seed_user(db_session) -> User:
     """创建测试用户（带余额和 API Key）"""
@@ -107,16 +117,18 @@ async def seed_user(db_session) -> User:
 
 
 @pytest_asyncio.fixture
-async def seed_model(db_session) -> ModelCatalog:
+async def seed_model(db_session) -> Model:
     """创建测试模型 + Mock 路由通道"""
-    model = ModelCatalog(
-        id="test-model",
+    model = Model(
+        model="test-model",
+        vendor="mock",
         display_name="Test Model",
         owned_by="mock",
         model_type="llm",
         input_price=2.0,
         output_price=8.0,
         context_window=8192,
+        upstream_model="test-model",
         route_strategy="priority",
     )
     db_session.add(model)
@@ -128,16 +140,6 @@ async def seed_model(db_session) -> ModelCatalog:
         credentials_enc="{}",
     )
     db_session.add(provider)
-    await db_session.flush()
-
-    channel = RouteChannel(
-        model_id=model.id,
-        provider_id=provider.id,
-        upstream_model=model.id,
-        weight=100,
-        priority=100,
-    )
-    db_session.add(channel)
     await db_session.commit()
     return model
 

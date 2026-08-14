@@ -12,13 +12,15 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import ModelAlias, ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.providers.base import BaseProvider
 from src.providers.openai_provider import OpenAIProvider
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.gemini_provider import GeminiProvider
 from src.providers.mock_provider import MockProvider
 from src.config import settings
+from src.services.model_key import parse_model_key, format_model_key, strip_context_suffix
+from src.services.chat_tools import normalize_tool_message_order
 
 
 # 统一适配器工厂（按注册表 adapter + AES-GCM 解密凭证构建）
@@ -35,7 +37,12 @@ def _ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
-def _select_channel(channels: list[RouteChannel], strategy: str) -> Optional[RouteChannel]:
+def _channel_key(channel: Model) -> str:
+    """通道唯一标识：厂商key/模型名"""
+    return format_model_key(channel.model, channel.vendor)
+
+
+def _select_channel(channels: list[Model], strategy: str) -> Optional[Model]:
     """从候选通道中按策略选择一个"""
     now = datetime.now(timezone.utc)
     available = []
@@ -64,7 +71,7 @@ def _select_channel(channels: list[RouteChannel], strategy: str) -> Optional[Rou
         return _weighted_random(available)
 
 
-def _weighted_random(channels: list[RouteChannel]) -> Optional[RouteChannel]:
+def _weighted_random(channels: list[Model]) -> Optional[Model]:
     """按权重加权随机选择"""
     if not channels:
         return None
@@ -80,7 +87,7 @@ def _weighted_random(channels: list[RouteChannel]) -> Optional[RouteChannel]:
     return channels[-1]
 
 
-def _mark_channel_error(channel: RouteChannel) -> None:
+def _mark_channel_error(channel: Model) -> None:
     """标记通道错误，必要时触发熔断"""
     channel.error_count += 1
     total = channel.error_count + channel.success_count
@@ -92,17 +99,17 @@ def _mark_channel_error(channel: RouteChannel) -> None:
             channel.circuit_open_until = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
             logger.warning(
                 "circuit breaker opened for channel={} model={} error_rate={:.2f}",
-                channel.id, channel.model_id, error_rate,
+                _channel_key(channel), channel.model, error_rate,
             )
 
 
-def _mark_channel_success(channel: RouteChannel) -> None:
+def _mark_channel_success(channel: Model) -> None:
     """标记通道成功，若处于 half-open 则恢复"""
     channel.success_count += 1
     if channel.health_status == "circuit_half_open":
         channel.health_status = "healthy"
         channel.error_count = 0
-        logger.info("circuit breaker closed for channel={}", channel.id)
+        logger.info("circuit breaker closed for channel={}", _channel_key(channel))
 
 
 class RouterService:
@@ -112,38 +119,35 @@ class RouterService:
     """
 
     async def resolve_model_id(self, db: AsyncSession, model_name: str) -> str:
-        """将模型名（含别名）解析为真实 model_id"""
-        # 先查别名表
-        alias_row = await db.scalar(
-            select(ModelAlias).where(ModelAlias.alias == model_name)
-        )
-        if alias_row:
-            return alias_row.model_id
-        return model_name
+        """解析模型名（vendor/model 或 alias）为路由键 vendor/model"""
+        mid, vendor = parse_model_key(model_name)
+        if vendor:
+            return format_model_key(mid, vendor)
+        row = await Model.get_by_alias(db, mid)
+        if row:
+            return format_model_key(row.model, row.vendor)
+        raise ValueError(f"model name '{model_name}' is not a valid vendor/model key or alias")
 
     async def get_channels(
         self,
         db: AsyncSession,
         model_id: str,
-    ) -> tuple[list[RouteChannel], str]:
+    ) -> tuple[list[Model], str]:
         """
-        获取指定模型的所有活跃通道和路由策略
-        返回：(channels, strategy)
+        获取模型通道：'厂商key/模型名' → 精确唯一一条（厂商+模型确定的路）
         """
-        # 查模型
-        model = await db.get(ModelCatalog, model_id)
+        mid, vendor = parse_model_key(model_id)
+        if not vendor:
+            raise ValueError(f"model_id '{model_id}' missing vendor prefix (expected vendor/model)")
+        model = await db.get(Model, (mid, vendor))
         if not model or not model.is_active:
             return [], "weighted_random"
-
-        # 查通道（JOIN provider）
-        result = await db.execute(
-            select(RouteChannel).where(
-                RouteChannel.model_id == model_id,
-                RouteChannel.is_active == True,  # noqa: E712
-            )
+        provider = await db.scalar(
+            select(Provider).where(Provider.name == vendor, Provider.is_active == True)
         )
-        channels = list(result.scalars().all())
-        return channels, model.route_strategy
+        if not provider:
+            return [], "weighted_random"
+        return [model], model.route_strategy
 
     async def route_chat(
         self,
@@ -151,12 +155,17 @@ class RouterService:
         model_name: str,
         payload: dict[str, Any],
         stream: bool = False,
-    ) -> tuple[Any, Optional[RouteChannel], Optional[Provider], Optional[dict]]:
+    ) -> tuple[Any, Optional[Model], Optional[Provider], Optional[dict]]:
         """
         路由文本对话请求，支持故障转移
         返回：(response_or_generator, used_channel, used_provider, last_error_info)
         last_error_info: 全部通道失败时，最后一次上游错误的详情
         """
+        # 唯一发送入口：发送前统一规范化 tool 消息顺序
+        # （assistant(tool_calls) 后必须紧跟 tool，否则 DeepSeek 等上游报 insufficient tool messages）
+        # 公共方法放 chat_tools.py，这里只调用；不绑定具体供应商适配器（openai/anthropic/gemini 共用）
+        payload["messages"] = normalize_tool_message_order(payload.get("messages", []))
+
         model_id = await self.resolve_model_id(db, model_name)
         channels, strategy = await self.get_channels(db, model_id)
 
@@ -167,14 +176,14 @@ class RouterService:
         last_error_info: Optional[dict] = None
 
         for attempt in range(settings.max_retries + 1):
-            remaining = [c for c in channels if c.id not in tried]
+            remaining = [c for c in channels if _channel_key(c) not in tried]
             channel = _select_channel(remaining, strategy)
             if not channel:
                 break
-            tried.add(channel.id)
+            tried.add(_channel_key(channel))
 
             # 加载供应商
-            provider_obj = await db.get(Provider, channel.provider_id)
+            provider_obj = await db.scalar(select(Provider).where(Provider.name == channel.vendor))
             if not provider_obj or not provider_obj.is_active:
                 _mark_channel_error(channel)
                 await db.commit()
@@ -222,7 +231,7 @@ class RouterService:
                     }
                 logger.warning(
                     "channel {} failed on attempt {}: {}",
-                    channel.id, attempt + 1, exc,
+                    _channel_key(channel), attempt + 1, exc,
                 )
                 _mark_channel_error(channel)
                 await db.commit()
@@ -234,7 +243,7 @@ class RouterService:
         db: AsyncSession,
         model_name: str,
         payload: dict[str, Any],
-    ) -> tuple[Optional[dict], Optional[RouteChannel], Optional[Provider], Optional[dict]]:
+    ) -> tuple[Optional[dict], Optional[Model], Optional[Provider], Optional[dict]]:
         """路由图像生成请求"""
         model_id = await self.resolve_model_id(db, model_name)
         channels, strategy = await self.get_channels(db, model_id)
@@ -246,13 +255,13 @@ class RouterService:
         last_error_info: Optional[dict] = None
 
         for attempt in range(settings.max_retries + 1):
-            remaining = [c for c in channels if c.id not in tried]
+            remaining = [c for c in channels if _channel_key(c) not in tried]
             channel = _select_channel(remaining, strategy)
             if not channel:
                 break
-            tried.add(channel.id)
+            tried.add(_channel_key(channel))
 
-            provider_obj = await db.get(Provider, channel.provider_id)
+            provider_obj = await db.scalar(select(Provider).where(Provider.name == channel.vendor))
             if not provider_obj or not provider_obj.is_active:
                 _mark_channel_error(channel)
                 await db.commit()
@@ -291,7 +300,7 @@ class RouterService:
                         "provider": provider_obj.name if provider_obj else "unknown",
                         "model": channel.upstream_model if channel else None,
                     }
-                logger.warning("image channel {} failed: {}", channel.id, exc)
+                logger.warning("image channel {} failed: {}", _channel_key(channel), exc)
                 _mark_channel_error(channel)
                 await db.commit()
 

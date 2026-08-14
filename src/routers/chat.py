@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, ApiKey, ModelCatalog
+from src.db.models import User, ApiKey, Model
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
 
@@ -111,7 +111,7 @@ async def _billing_after_stream(
     req_id: str,
     user: User,
     api_key: ApiKey,
-    model: ModelCatalog,
+    model: Model,
     model_name: str,
     provider_name: str,
     usage: Optional[dict],
@@ -178,7 +178,7 @@ async def _stream_chat(
     provider_name: str,
     user: User,
     api_key: ApiKey,
-    model: ModelCatalog,
+    model: Model,
 ) -> AsyncGenerator[str, None]:
     """将上游 SSE 流透传给客户端，同时收集 usage 用于流后计费"""
     from src.database import AsyncSessionLocal
@@ -251,7 +251,10 @@ async def chat_completions(
         return JSONResponse(status_code=e.status_code, content=e.detail)
 
     # 查询模型信息（解析别名 + 官方模型名兜底）
-    model, actual_model_name = await ModelCatalog.resolve_or_default(db, request.model)
+    try:
+        model, actual_model_name = await Model.resolve_or_default(db, request.model)
+    except ValueError as e:
+        return _build_error(400, str(e), "invalid_request_error", "invalid_model")
     if not model or not model.is_active:
         return _build_error(
             400,
@@ -272,7 +275,7 @@ async def chat_completions(
 
     # ── 通过路由引擎转发（含故障转移）──
     result, channel, provider, error_info = await router_service.route_chat(
-        db, request.model, payload, stream=bool(request.stream)
+        db, actual_model_name, payload, stream=bool(request.stream)
     )
 
     if result is None:

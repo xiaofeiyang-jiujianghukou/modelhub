@@ -25,10 +25,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, ApiKey, ModelCatalog, Provider, RouteChannel
+from src.db.models import User, ApiKey, Model, Provider
 from src.config import settings
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
+from src.services.chat_tools import chat_tool, chat_tool_call_element, chat_tool_result
+from src.services.model_key import parse_model_key
 
 router = APIRouter(tags=["Anthropic"])
 
@@ -50,6 +52,8 @@ class AnthropicRequest(BaseModel):
     stream: Optional[bool] = False
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
+    tools: Optional[list[dict]] = None          # Anthropic tools（含 name/description/input_schema）
+    tool_choice: Optional[dict] = None          # Anthropic tool_choice
 
 
 # ── 模型映射 ────────────────────────────────────────────────────────────────
@@ -68,7 +72,7 @@ def _resolve_model(model_name: str) -> str:
     2. claude-<网关模型ID> 包装（/model 选择器发来的）→ 剥壳映射到真实模型
     3. Claude 官方内置名（claude-opus-4-x / opus[1m] 等）→ 默认模型
     """
-    default = getattr(settings, "default_claude_model", None) or "deepseek-v4-flash"
+    default = getattr(settings, "default_claude_model", None) or "glm/glm-4-flash"
     lower = model_name.lower()
     if lower in ("opus", "sonnet", "haiku") or lower.startswith(_CLAUDE_BUILTIN_PREFIXES):
         logger.info("claude builtin model {} mapped to {}", model_name, default)
@@ -97,6 +101,86 @@ def _extract_text(content: str | list) -> str:
     return "".join(parts)
 
 
+def _block_text(content) -> str:
+    """提取 tool_result 的 content（字符串或 content block 列表）为纯文本"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content)
+
+
+def _anthropic_message_to_openai(m: AnthropicMessage) -> list[dict]:
+    """Anthropic 消息 → 一条或多条 OpenAI 消息（多轮工具调用：tool_use → tool_calls，tool_result → tool 消息）"""
+    if isinstance(m.content, str):
+        return [{"role": m.role, "content": m.content}]
+
+    if m.role == "assistant":
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        for block in m.content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+            elif block.get("type") == "tool_use":
+                tool_calls.append(chat_tool_call_element(
+                    block.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+                    block.get("name", ""),
+                    json.dumps(block.get("input") or {}, ensure_ascii=False),
+                ))
+        msg: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) or None}
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        return [msg]
+
+    if m.role == "user":
+        result: list[dict] = []
+        text_parts: list[str] = []
+        for block in m.content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+            elif block.get("type") == "tool_result":
+                result.append(chat_tool_result(
+                    block.get("tool_use_id", ""),
+                    _block_text(block.get("content", "")),
+                ))
+        # 工具结果必须紧跟对应 assistant(tool_calls)，文本放最后（不能 insert(0) 插到 tool 前）
+        if text_parts:
+            result.append({"role": "user", "content": "".join(text_parts)})
+        return result
+
+    # system 等其他角色：退化为纯文本
+    return [{"role": m.role, "content": _extract_text(m.content)}]
+
+
+def _anthropic_tools_to_openai(tools: Optional[list[dict]]) -> Optional[list[dict]]:
+    """Anthropic tools → chat tools（input_schema → parameters，走统一中间格式；过滤 name 为空的工具）"""
+    if not tools:
+        return None
+    result = [chat_tool(t.get("name"), t.get("description", ""), t.get("input_schema")) for t in tools if t.get("name")]
+    return result or None
+
+
+def _anthropic_tool_choice_to_openai(tc: Optional[dict]):
+    """Anthropic tool_choice → OpenAI tool_choice"""
+    if not tc:
+        return None
+    t = tc.get("type")
+    if t == "any":
+        return "required"
+    if t == "tool":
+        return {"type": "function", "function": {"name": tc.get("name")}}
+    if t == "none":
+        return "none"
+    return "auto"
+
+
 def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
     """将 Anthropic 请求转换为 OpenAI 格式 payload"""
     messages = []
@@ -105,7 +189,7 @@ def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
         messages.append({"role": "system", "content": _extract_text(req.system)})
 
     for m in req.messages:
-        messages.append({"role": m.role, "content": _extract_text(m.content)})
+        messages.extend(_anthropic_message_to_openai(m))
 
     payload: dict[str, Any] = {
         "model": model_name,
@@ -120,10 +204,38 @@ def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
         payload["top_p"] = req.top_p
     if req.stop_sequences:
         payload["stop"] = req.stop_sequences
+    # 工具定义透传（Claude Code 依赖 tool_use 执行 Bash/Read/Edit 等）
+    openai_tools = _anthropic_tools_to_openai(req.tools)
+    if openai_tools:
+        payload["tools"] = openai_tools
+        tc = _anthropic_tool_choice_to_openai(req.tool_choice)
+        if tc:
+            payload["tool_choice"] = tc
     return payload
 
 
 # ── 响应转换（OpenAI 格式 → Anthropic 格式）─────────────────────────────────
+
+def _openai_message_to_anthropic_content(message: dict) -> list[dict]:
+    """OpenAI message（content + tool_calls）→ Anthropic content blocks（text + tool_use）"""
+    content = []
+    text = message.get("content") or ""
+    if text:
+        content.append({"type": "text", "text": text})
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except Exception:
+            args = {}
+        content.append({
+            "type": "tool_use",
+            "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+            "name": fn.get("name", ""),
+            "input": args if isinstance(args, dict) else {"value": args},
+        })
+    return content
+
 
 def _to_anthropic_response(
     result: dict,
@@ -132,10 +244,9 @@ def _to_anthropic_response(
 ) -> dict:
     """将 OpenAI 格式响应转换为 Anthropic Messages 格式"""
     choices = result.get("choices", [])
-    text = ""
-    if choices:
-        # 仅取 content，丢弃 reasoning_content（思考过程不进入对话输出，节省上下文）
-        text = choices[0].get("message", {}).get("content", "") or ""
+    message = choices[0].get("message", {}) if choices else {}
+    # 文本 + 工具调用一起转（丢弃 reasoning_content，思考过程不进入对话输出）
+    content = _openai_message_to_anthropic_content(message)
 
     usage = result.get("usage", {})
     stop_reason_map = {
@@ -150,7 +261,7 @@ def _to_anthropic_response(
         "type": "message",
         "role": "assistant",
         "model": model_name,
-        "content": [{"type": "text", "text": text}],
+        "content": content or [{"type": "text", "text": ""}],
         "stop_reason": stop_reason_map.get(finish, "end_turn"),
         "stop_sequence": None,
         "usage": {
@@ -185,12 +296,11 @@ def _anthropic_stream_events(
             }
             yield f"event: message_start\ndata: {json.dumps(start_msg)}\n\n"
 
-            # content_block_start
-            block_start = {
-                "type": "content_block_start", "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }
-            yield f"event: content_block_start\ndata: {json.dumps(block_start)}\n\n"
+            # 流式状态：文本块 + 工具调用块（OpenAI tool_calls 按 index 累积 arguments 分片）
+            text_block_index: Optional[int] = None
+            tool_blocks: dict[int, dict] = {}  # openai_index -> {anthro_index, id, name, args}
+            next_block_index = 0
+            finish_reason = "stop"
 
             async for line in gen:
                 if line.startswith("data: "):
@@ -211,26 +321,72 @@ def _anthropic_stream_events(
                     choices = chunk.get("choices", [])
                     if not choices:
                         continue
-                    delta = choices[0].get("delta", {})
+                    choice = choices[0]
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    delta = choice.get("delta", {})
+
+                    # 文本 delta
                     content = delta.get("content", "")
                     if content:
+                        if text_block_index is None:
+                            text_block_index = next_block_index
+                            next_block_index += 1
+                            block_start = {
+                                "type": "content_block_start", "index": text_block_index,
+                                "content_block": {"type": "text", "text": ""},
+                            }
+                            yield f"event: content_block_start\ndata: {json.dumps(block_start)}\n\n"
                         delta_evt = {
-                            "type": "content_block_delta", "index": 0,
+                            "type": "content_block_delta", "index": text_block_index,
                             "delta": {"type": "text_delta", "text": content},
                         }
                         yield f"event: content_block_delta\ndata: {json.dumps(delta_evt)}\n\n"
+
+                    # 工具调用 delta（OpenAI tool_calls → Anthropic tool_use）
+                    for tc in delta.get("tool_calls") or []:
+                        oi = tc.get("index", 0)
+                        fn = tc.get("function") or {}
+                        if oi not in tool_blocks:
+                            tb = {
+                                "anthro_index": next_block_index,
+                                "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+                                "name": fn.get("name", ""),
+                                "args": "",
+                            }
+                            tool_blocks[oi] = tb
+                            next_block_index += 1
+                            block_start = {
+                                "type": "content_block_start", "index": tb["anthro_index"],
+                                "content_block": {"type": "tool_use", "id": tb["id"], "name": tb["name"], "input": {}},
+                            }
+                            yield f"event: content_block_start\ndata: {json.dumps(block_start)}\n\n"
+                        args_delta = fn.get("arguments", "")
+                        if args_delta:
+                            tool_blocks[oi]["args"] += args_delta
+                            delta_evt = {
+                                "type": "content_block_delta", "index": tool_blocks[oi]["anthro_index"],
+                                "delta": {"type": "input_json_delta", "partial_json": args_delta},
+                            }
+                            yield f"event: content_block_delta\ndata: {json.dumps(delta_evt)}\n\n"
+
                     # usage 收集（部分上游在末尾 chunk 返回）
                     if chunk.get("usage"):
                         input_tokens = chunk["usage"].get("prompt_tokens", input_tokens)
                         output_tokens = chunk["usage"].get("completion_tokens", output_tokens)
 
-            # content_block_stop
-            block_stop = {"type": "content_block_stop", "index": 0}
-            yield f"event: content_block_stop\ndata: {json.dumps(block_stop)}\n\n"
-            # message_delta
+            # 关闭所有打开的 content block（按 index 顺序）
+            open_indices = ([text_block_index] if text_block_index is not None else []) \
+                + [tb["anthro_index"] for tb in tool_blocks.values()]
+            for idx in sorted(open_indices):
+                block_stop = {"type": "content_block_stop", "index": idx}
+                yield f"event: content_block_stop\ndata: {json.dumps(block_stop)}\n\n"
+
+            # message_delta（工具调用 → stop_reason=tool_use）
+            stop_reason = "tool_use" if finish_reason == "tool_calls" else "end_turn"
             delta_msg = {
                 "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
                 "usage": {"output_tokens": output_tokens},
             }
             yield f"event: message_delta\ndata: {json.dumps(delta_msg)}\n\n"
@@ -274,7 +430,7 @@ async def count_tokens(req: CountTokensRequest):
     return {"input_tokens": estimated}
 
 
-# 注：GET /v1/models 由 models_list 路由统一处理（带 anthropic-version 头时返回 Anthropic 格式）
+# 注：GET /v1/models 由 models 路由统一处理（带 anthropic-version 头时返回 Anthropic 格式）
 
 
 # ── 端点 ─────────────────────────────────────────────────────────────────────
@@ -358,7 +514,8 @@ async def anthropic_messages(
         completion_tokens = usage.get("completion_tokens", 0)
         total = prompt_tokens + completion_tokens
 
-        model_obj = await ModelCatalog.get_by_id_or_alias(db, model_name)
+        mid, _vendor = parse_model_key(model_name)
+        model_obj = await Model.get_by_model_and_vendor(db, mid, _vendor) if _vendor else None
         cost = 0.0
         if total > 0 and model_obj and model_obj.model_type == "llm":
             cost = calc_llm_cost(model_obj, prompt_tokens, completion_tokens)

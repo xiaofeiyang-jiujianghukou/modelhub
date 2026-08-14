@@ -4,7 +4,7 @@
 
 import pytest
 
-from src.models import ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.services import model_sync
 from src.services.model_sync import sync_provider_models
 from src.providers.provider_registry import get_spec
@@ -51,10 +51,10 @@ async def test_openai_parser_and_exclude(db_session, monkeypatch):
     assert ids == {"gpt-5", "gpt-5-mini"}
 
     # 入库校验
-    gpt5 = await db_session.get(ModelCatalog, "gpt-5")
+    gpt5 = (await db_session.execute(select(Model).where(Model.model == "gpt-5").limit(1))).scalars().first()
     assert gpt5.price_source == "default"
     assert gpt5.synced_from == "openai"
-    assert await db_session.get(ModelCatalog, "text-embedding-3-large") is None
+    assert (await db_session.execute(select(Model).where(Model.model == "text-embedding-3-large").limit(1))).scalars().first() is None
 
 
 @pytest.mark.asyncio
@@ -76,13 +76,13 @@ async def test_grok_official_pricing(db_session, monkeypatch):
     result = await sync_provider_models(db_session, provider, get_spec("grok"))
 
     assert result.added == 2
-    m = await db_session.get(ModelCatalog, "grok-4.6")
+    m = (await db_session.execute(select(Model).where(Model.model == "grok-4.6").limit(1))).scalars().first()
     assert m.input_price == 12500
     assert m.output_price == 25000
     assert m.price_source == "official"
     assert m.context_window == 131072
-    assert await db_session.get(ModelCatalog, "grok-imagine-image") is None
-    assert await db_session.get(ModelCatalog, "grok-voice-1") is None
+    assert (await db_session.execute(select(Model).where(Model.model == "grok-imagine-image").limit(1))).scalars().first() is None
+    assert (await db_session.execute(select(Model).where(Model.model == "grok-voice-1").limit(1))).scalars().first() is None
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_anthropic_pagination(db_session, monkeypatch):
 
     assert calls["n"] == 2
     assert result.added == 2
-    m = await db_session.get(ModelCatalog, "claude-sonnet-5")
+    m = (await db_session.execute(select(Model).where(Model.model == "claude-sonnet-5").limit(1))).scalars().first()
     assert m.display_name == "Claude Sonnet 5"
     assert m.context_window == 200000
 
@@ -139,7 +139,7 @@ async def test_gemini_native_parsing(db_session, monkeypatch):
 
     assert result.added == 2
     assert result.model_ids == ["gemini-2.5-flash", "gemini-2.5-pro"]
-    m = await db_session.get(ModelCatalog, "gemini-2.5-flash")
+    m = (await db_session.execute(select(Model).where(Model.model == "gemini-2.5-flash").limit(1))).scalars().first()
     assert m.display_name == "Gemini 2.5 Flash"
     assert m.context_window == 1048576
 
@@ -161,7 +161,7 @@ async def test_gemini_fallback_compat(db_session, monkeypatch):
 
     assert result.status == "success"
     assert any("v1beta/openai/models" in u for u in calls)
-    assert await db_session.get(ModelCatalog, "gemini-2.5-flash") is not None
+    assert (await db_session.execute(select(Model).where(Model.model == "gemini-2.5-flash").limit(1))).scalars().first() is not None
 
 
 @pytest.mark.asyncio
@@ -173,20 +173,20 @@ async def test_static_sync_and_idempotent(db_session):
 
     r1 = await sync_provider_models(db_session, provider, spec)
     assert r1.status == "success"
-    assert r1.added == 4
-    assert r1.model_ids == ["glm-4-flash", "glm-5-2", "glm-5-1", "glm-5-3"]
+    assert r1.added == 3
+    assert set(r1.model_ids) == {"glm-4-flash", "glm-5.2", "glm-5.3"}
 
     # 幂等：再跑一次全部 updated
     r2 = await sync_provider_models(db_session, provider, spec)
     assert r2.added == 0
-    assert r2.updated == 4
+    assert r2.updated == 3
 
     # 通道唯一
-    channels = (await db_session.execute(select(RouteChannel).where(RouteChannel.provider_id == provider.id))).scalars().all()
-    assert len(channels) == 4
+    channels = (await db_session.execute(select(Model).where(Model.vendor == provider.name))).scalars().all()
+    assert len(channels) == 3
 
     # 静态清单价格标注（glm-4-flash 官方免费）
-    m = await db_session.get(ModelCatalog, "glm-4-flash")
+    m = (await db_session.execute(select(Model).where(Model.model == "glm-4-flash").limit(1))).scalars().first()
     assert m.price_source == "official"
     assert float(m.input_price) == 0.0
 

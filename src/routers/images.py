@@ -15,9 +15,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, ApiKey, ModelCatalog
+from src.db.models import User, ApiKey, Model
 from src.middleware.billing import billing_service, calc_image_cost
 from src.services.router import router_service
+from src.services.model_key import format_model_key, parse_model_key
 
 router = APIRouter(tags=["Images"])
 
@@ -75,7 +76,11 @@ async def create_image(
         return JSONResponse(status_code=e.status_code, content=e.detail)
 
     # 查询模型信息
-    model = await ModelCatalog.get_by_id_or_alias(db, request.model)
+    mid, vendor = parse_model_key(request.model)
+    if vendor:
+        model = await Model.get_by_model_and_vendor(db, mid, vendor)
+    else:
+        model = await Model.get_by_alias(db, mid)
     if not model or not model.is_active or model.model_type != "image":
         raise HTTPException(
             status_code=400,
@@ -98,7 +103,7 @@ async def create_image(
     start_time = time.time()
 
     # 通过路由引擎转发（含故障转移）
-    result, channel, provider, error_info = await router_service.route_image(db, request.model, payload)
+    result, channel, provider, error_info = await router_service.route_image(db, format_model_key(model.model, model.vendor), payload)
 
     if result is None:
         # 透传上游真实错误

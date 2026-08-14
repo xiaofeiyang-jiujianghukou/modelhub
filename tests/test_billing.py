@@ -8,7 +8,7 @@ import pytest
 from src.middleware.billing import (
     BillingService, calc_image_cost, calc_llm_cost, calc_video_cost,
 )
-from src.models import Balance, ModelCatalog, Transaction
+from src.db.models import Balance, Model, Transaction
 
 
 # ── 定价计算（纯函数）──────────────────────────────────────────────────────────
@@ -16,25 +16,25 @@ from src.models import Balance, ModelCatalog, Transaction
 class TestPricing:
     def test_llm_cost_calculation(self):
         """LLM 按 token 计费：输入2$/1M + 输出8$/1M"""
-        model = ModelCatalog(id="m", model_type="llm", input_price=2.0, output_price=8.0)
+        model = Model(model="m", model_type="llm", input_price=2.0, output_price=8.0)
         cost = calc_llm_cost(model, prompt_tokens=1000, completion_tokens=500)
         # (1000/1M)*2 + (500/1M)*8 = 0.002 + 0.004 = 0.006
         assert cost == pytest.approx(0.006, abs=1e-8)
 
     def test_llm_cost_zero_tokens(self):
         """零 token 不产生费用"""
-        model = ModelCatalog(id="m", model_type="llm", input_price=2.0, output_price=8.0)
+        model = Model(model="m", model_type="llm", input_price=2.0, output_price=8.0)
         assert calc_llm_cost(model, 0, 0) == 0
 
     def test_image_cost_per_image(self):
         """图像按张计费：n × unit_price"""
-        model = ModelCatalog(id="m", model_type="image", unit_price=0.04)
+        model = Model(model="m", model_type="image", unit_price=0.04)
         assert calc_image_cost(model, 1) == 0.04
         assert calc_image_cost(model, 4) == 0.16
 
     def test_video_cost_per_second(self):
         """视频按秒计费"""
-        model = ModelCatalog(id="m", model_type="video", unit_price=0.5)
+        model = Model(model="m", model_type="video", unit_price=0.5)
         assert calc_video_cost(model, 5) == 2.5
 
 

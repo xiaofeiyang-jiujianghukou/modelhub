@@ -150,84 +150,105 @@ class RequestLog(Base):
 
 # ── 模型目录表 ─────────────────────────────────────────────────────────────────
 
-class ModelCatalog(Base):
+class Model(Base):
     """
-    可用模型目录（审核报告 M-5：route_strategy 移至此表）
+    模型目录（单表）：模型名 + 厂商 复合唯一。
+    模型名可重复（同一模型多厂商提供），「模型名 + 厂商」确定唯一记录；
+    每条记录独立定价 + 独立上游模型名（路由信息合并自原 RouteChannel）。
     """
 
     __tablename__ = "models"
 
-    id: str = Column(String(100), primary_key=True)  # 如 'gpt-4o'
+    model: str = Column(String(100), primary_key=True)         # 模型名，如 'glm-5.2'（可重复）
+    vendor: str = Column(String(50), primary_key=True)         # 厂商 key（与 model 复合唯一）
     display_name: Optional[str] = Column(String(200), nullable=True)
     owned_by: Optional[str] = Column(String(100), nullable=True)
     model_type: str = Column(String(20), nullable=False)   # 'llm' | 'image' | 'video'
     input_price: Optional[float] = Column(Numeric(10, 6), nullable=True)   # 每 1M tokens
     output_price: Optional[float] = Column(Numeric(10, 6), nullable=True)  # 每 1M tokens
     unit_price: Optional[float] = Column(Numeric(10, 6), nullable=True)    # 每张/每秒
+    price_currency: str = Column(String(3), default="USD", nullable=False)  # 价格币种：CNY | USD（官方原始币种，避免折算精度丢失）
     context_window: Optional[int] = Column(Integer, nullable=True)
     price_source: str = Column(String(10), default="default", nullable=False)  # official | default | manual
+    upstream_model: Optional[str] = Column(String(200), nullable=True)   # 上游真实模型名（路由用）
+    alias: Optional[str] = Column(String(100), nullable=True, unique=True, index=True)  # 客户端别名（全局唯一）
+    weight: int = Column(Integer, default=100, nullable=False)
+    priority: int = Column(Integer, default=0, nullable=False)
+    # m-2: healthy | degraded | circuit_open | circuit_half_open
+    health_status: str = Column(String(30), default="healthy", nullable=False)
+    error_count: int = Column(Integer, default=0, nullable=False)
+    success_count: int = Column(Integer, default=0, nullable=False)
+    last_checked_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
+    circuit_open_until: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
     last_synced_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
     synced_from: Optional[str] = Column(String(100), nullable=True)        # 同步来源 provider.name
     supports_streaming: bool = Column(Boolean, default=True, nullable=False)
-    route_strategy: str = Column(String(30), default="weighted_random", nullable=False)  # M-5
+    route_strategy: str = Column(String(30), default="weighted_random", nullable=False)
     is_active: bool = Column(Boolean, default=True, nullable=False)
     created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: datetime = Column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
 
-    route_channels = relationship("RouteChannel", back_populates="model")
-    aliases = relationship("ModelAlias", back_populates="model")
+    __table_args__ = (
+        Index("idx_models_vendor", "vendor", "is_active"),
+    )
 
     @classmethod
-    async def get_by_id_or_alias(cls, db: AsyncSession, model_id: str):
-        """通过 ID 或别名获取模型"""
+    async def get_by_model_and_vendor(cls, db: AsyncSession, model: str, vendor: str):
+        """按复合主键精确查"""
+        row = await db.get(cls, (model, vendor))
+        return row if (row and row.is_active) else None
+
+    @classmethod
+    async def get_by_alias(cls, db: AsyncSession, alias: str):
+        """按别名查（全局唯一），不存在返回 None"""
         from sqlalchemy import select
-        # 先尝试直接查询
-        result = await db.execute(select(cls).where(cls.id == model_id))
-        model = result.scalar_one_or_none()
-        if model:
-            return model
-        # 尝试通过别名查询
         result = await db.execute(
-            select(cls)
-            .join(ModelAlias, cls.id == ModelAlias.model_id)
-            .where(ModelAlias.alias == model_id)
+            select(cls).where(cls.alias == alias, cls.is_active == True)
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
     @classmethod
     async def resolve_or_default(cls, db: AsyncSession, model_name: str):
         """
-        解析模型，若不存在则尝试官方模型名兜底映射到默认模型
+        解析模型名（vendor/model 或 vendor/model@alias），不存在时兜底到默认模型。
         返回: (model, actual_model_name)
         """
         from src.config import settings
-        model = await cls.get_by_id_or_alias(db, model_name)
+        from src.services.model_key import parse_model_key
+
+        mid, vendor = parse_model_key(model_name)
+        if vendor:
+            model = await cls.get_by_model_and_vendor(db, mid, vendor)
+        else:
+            model = await cls.get_by_alias(db, mid)
         if model and model.is_active:
-            return model, model_name
+            from src.services.model_key import format_model_key
+            actual = format_model_key(model.model, model.vendor)
+            return model, actual
+
+        # Claude Code 上下文窗口后缀剥离（deepseek-v4-pro[1M] → deepseek-v4-pro）
+        import re as _re
+        cleaned = _re.sub(r"\[\d+[MK]\]$", "", model_name, flags=_re.I)
+        if cleaned != model_name:
+            mid2, vendor2 = parse_model_key(cleaned)
+            if vendor2:
+                model = await cls.get_by_model_and_vendor(db, mid2, vendor2) or await cls.get_by_alias(db, mid2)
+                if model and model.is_active:
+                    from src.services.model_key import format_model_key
+                    actual = format_model_key(model.model, model.vendor)
+                    return model, actual
 
         # 官方客户端默认模型名兜底（Codex: gpt-*/o1/o3/o4；Claude: claude-*）
         if model_name.startswith(("gpt-", "o1", "o3", "o4", "claude-")):
             default = settings.default_claude_model
-            default_model = await cls.get_by_id_or_alias(db, default)
-            if default_model and default_model.is_active:
-                return default_model, default
+            dmid, dvendor = parse_model_key(default)
+            if dvendor:
+                default_model = await cls.get_by_model_and_vendor(db, dmid, dvendor)
+                if default_model and default_model.is_active:
+                    return default_model, default
 
         return model, model_name
-
-
-# ── 模型别名表（审核报告 M-3）────────────────────────────────────────────────
-
-class ModelAlias(Base):
-    """模型别名（如 gpt-4-turbo → gpt-4o）"""
-
-    __tablename__ = "model_aliases"
-
-    alias: str = Column(String(100), primary_key=True)
-    model_id: str = Column(String(100), ForeignKey("models.id"), nullable=False)
-    created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
-
-    model = relationship("ModelCatalog", back_populates="aliases")
-
 
 # ── 供应商表 ───────────────────────────────────────────────────────────────────
 
@@ -247,40 +268,6 @@ class Provider(Base):
     last_sync_status: Optional[str] = Column(String(20), nullable=True)     # success | error | pending
     last_sync_error: Optional[str] = Column(Text, nullable=True)
     created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
-
-    route_channels = relationship("RouteChannel", back_populates="provider")
-
-
-# ── 路由通道表 ─────────────────────────────────────────────────────────────────
-
-class RouteChannel(Base):
-    """
-    路由通道（审核报告 M-5：strategy 已移至 models 表）
-    health_status 使用审核报告 m-2 建议的枚举值
-    """
-
-    __tablename__ = "route_channels"
-
-    id: str = Column(String(36), primary_key=True, default=_uuid)
-    model_id: str = Column(String(100), ForeignKey("models.id"), nullable=False)
-    provider_id: str = Column(String(36), ForeignKey("providers.id"), nullable=False)
-    upstream_model: str = Column(String(200), nullable=False)  # 上游实际模型名
-    weight: int = Column(Integer, default=100, nullable=False)
-    priority: int = Column(Integer, default=0, nullable=False)
-    is_active: bool = Column(Boolean, default=True, nullable=False)
-    # m-2: healthy | degraded | circuit_open | circuit_half_open
-    health_status: str = Column(String(30), default="healthy", nullable=False)
-    error_count: int = Column(Integer, default=0, nullable=False)
-    success_count: int = Column(Integer, default=0, nullable=False)
-    last_checked_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
-    circuit_open_until: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
-
-    model = relationship("ModelCatalog", back_populates="route_channels")
-    provider = relationship("Provider", back_populates="route_channels")
-
-    __table_args__ = (
-        Index("idx_route_channels_model", "model_id", "is_active"),
-    )
 
 
 # ── 视频任务表（审核报告 M-4，MVP 建表但不实现功能）─────────────────────────
@@ -303,3 +290,29 @@ class VideoTask(Base):
     error_message: Optional[str] = Column(Text, nullable=True)
     created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
     completed_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
+
+
+# ── 模型参考价/上下文表（官方核对数据源，dashboard 界面可管理）────────────────
+
+class ModelReference(Base):
+    """
+    模型官方参考价 + 上下文窗口（sync 时的兜底 / static 供应商清单数据源）。
+
+    与 Model（实际同步结果）分离：本表是"官方参考值"，由界面/种子维护，
+    sync 时优先用上游返回，上游缺失时用本表兜底；static 供应商（无 /models 端点）的
+    模型清单也存本表（vendor 字段标记归属）。
+    """
+
+    __tablename__ = "model_references"
+
+    model_id: str = Column(String(100), primary_key=True)  # 网关模型 ID
+    vendor: Optional[str] = Column(String(50), nullable=True, index=True)  # 供应商 key（static 清单归属）
+    upstream_model: Optional[str] = Column(String(200), nullable=True)     # 上游真实模型名（static 用）
+    display_name: Optional[str] = Column(String(200), nullable=True)
+    input_price: Optional[float] = Column(Numeric(10, 6), nullable=True)   # 每 1M tokens（币种见 price_currency）
+    output_price: Optional[float] = Column(Numeric(10, 6), nullable=True)  # 每 1M tokens（币种见 price_currency）
+    price_currency: str = Column(String(3), default="USD", nullable=False)  # 价格币种：CNY | USD（官方原始币种）
+    context_window: Optional[int] = Column(Integer, nullable=True)
+    price_source: str = Column(String(10), default="official", nullable=False)  # official | default | manual
+    created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: datetime = Column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)

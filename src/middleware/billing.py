@@ -13,7 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import Balance, ModelCatalog, RequestLog, Transaction
+from src.db.models import Balance, Model, RequestLog, Transaction
 from src.config import settings
 
 # ── 内存余额缓存（生产替换为 Redis）────────────────────────────────────────────
@@ -39,27 +39,38 @@ def _balance_cache_invalidate(user_id: str) -> None:
 
 # ── 定价计算 ───────────────────────────────────────────────────────────────────
 
+def _to_usd(price: Optional[float], currency: Optional[str]) -> float:
+    """原始币种价格 → USD（余额/流水统一 USD 记账）"""
+    if price is None:
+        return 0.0
+    v = float(price)
+    cur = (currency or "USD").upper()
+    if cur == "CNY":
+        return v / settings.usd_to_cny_rate
+    return v
+
+
 def calc_llm_cost(
-    model: ModelCatalog,
+    model: Model,
     prompt_tokens: int,
     completion_tokens: int,
 ) -> float:
     """LLM 按 token 计算费用（美元）"""
-    input_price = float(model.input_price or 0)
-    output_price = float(model.output_price or 0)
+    input_price = _to_usd(model.input_price, model.price_currency)
+    output_price = _to_usd(model.output_price, model.price_currency)
     cost = (prompt_tokens / 1_000_000) * input_price + (completion_tokens / 1_000_000) * output_price
     return round(cost, 8)
 
 
-def calc_image_cost(model: ModelCatalog, image_count: int) -> float:
-    """图像按张计算费用"""
-    unit = float(model.unit_price or 0)
+def calc_image_cost(model: Model, image_count: int) -> float:
+    """图像按张计算费用（美元）"""
+    unit = _to_usd(model.unit_price, model.price_currency)
     return round(unit * image_count, 8)
 
 
-def calc_video_cost(model: ModelCatalog, video_seconds: float) -> float:
-    """视频按秒计算费用"""
-    unit = float(model.unit_price or 0)
+def calc_video_cost(model: Model, video_seconds: float) -> float:
+    """视频按秒计算费用（美元）"""
+    unit = _to_usd(model.unit_price, model.price_currency)
     return round(unit * video_seconds, 8)
 
 

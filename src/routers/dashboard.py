@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.database import get_db
-from src.models import User, Balance
+from src.db.models import User, Balance
 from src.middleware.auth import get_current_user_jwt
 
 router = APIRouter(tags=["Dashboard"])

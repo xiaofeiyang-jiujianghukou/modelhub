@@ -15,12 +15,13 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.database import get_db
 from src.middleware.auth import get_admin_user
-from src.models import ModelAlias, ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, ModelReference, Provider
 from src.providers.provider_registry import get_spec, list_registry_entries
 from src.services.crypto import decrypt_credentials, encrypt_credentials
-from src.services.model_sync import SyncResult, run_sync_background, sync_provider_models
+from src.services.model_sync import SyncResult, spawn_sync_task, sync_provider_models
 
 router = APIRouter(tags=["Admin"])
 
@@ -55,15 +56,20 @@ def _has_key(provider: Provider) -> bool:
 
 
 async def _model_count(db: AsyncSession, provider_id: str) -> int:
+    provider = await db.get(Provider, provider_id)
+    if not provider:
+        return 0
     return await db.scalar(
-        select(func.count()).select_from(RouteChannel).where(RouteChannel.provider_id == provider_id)
+        select(func.count()).select_from(Model).where(Model.vendor == provider.name)
     ) or 0
 
 
 def _to_item(provider: Provider, model_count: int) -> dict:
+    spec = get_spec(provider.name)
     return {
         "id": provider.id,
         "name": provider.name,
+        "display_name": spec.display_name if spec else provider.name,
         "base_url": provider.base_url,
         "auth_type": provider.auth_type,
         "has_key": _has_key(provider),
@@ -131,7 +137,7 @@ async def create_provider(
         if spec.model_source == "static":
             sync_result = await sync_provider_models(db, provider, spec)
         else:
-            run_sync_background(provider.id)
+            spawn_sync_task(provider.id)
 
     return {
         "id": provider.id,
@@ -176,12 +182,17 @@ async def update_provider(
     await db.commit()
     await db.refresh(provider)
 
+    # 启用/禁用切换 → 模型可见性变化，刷新 Codex 目录（与删除供应商一致）
+    if req.is_active is not None:
+        from src.services.codex_catalog import maybe_sync_background
+        maybe_sync_background()
+
     sync_result: Optional[SyncResult] = None
     if resync and spec:
         if spec.model_source == "static":
             sync_result = await sync_provider_models(db, provider, spec)
         else:
-            run_sync_background(provider.id)
+            spawn_sync_task(provider.id)
 
     item = _to_item(provider, await _model_count(db, provider.id))
     item["sync"] = {"status": "done" if sync_result else ("pending" if resync else None), "result": sync_result}
@@ -194,29 +205,14 @@ async def delete_provider(
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除供应商 + 级联清理其独占模型与路由通道（单事务）"""
+    """删除供应商 + 删除该厂商的所有模型记录（模型名+厂商唯一，单事务）"""
     provider = await db.get(Provider, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail={"error": {"message": "Provider not found", "type": "not_found", "code": "provider_not_found"}})
 
-    # 1. 找"仅由此 provider 承载"的模型（删通道后即成孤儿）
-    orphan_ids = (
-        select(RouteChannel.model_id).where(
-            RouteChannel.provider_id == provider_id,
-            RouteChannel.model_id.notin_(
-                select(RouteChannel.model_id).where(RouteChannel.provider_id != provider_id)
-            ),
-        ).distinct()
-    )
-    orphans = [r[0] for r in (await db.execute(orphan_ids)).all()]
-
-    # 2. 删通道
-    await db.execute(delete(RouteChannel).where(RouteChannel.provider_id == provider_id))
-    # 3. 删孤儿模型的别名（PostgreSQL 外键会拦，SQLite 兜底一致）
-    if orphans:
-        await db.execute(delete(ModelAlias).where(ModelAlias.model_id.in_(orphans)))
-        await db.execute(delete(ModelCatalog).where(ModelCatalog.id.in_(orphans)))
-    # 4. 删 provider
+    # 删该厂商的所有模型记录（「模型名+厂商」唯一，删厂商即删其全部模型）
+    deleted = await db.execute(delete(Model).where(Model.vendor == provider.name))
+    # 删 provider
     await db.execute(delete(Provider).where(Provider.id == provider_id))
     await db.commit()
 
@@ -224,8 +220,8 @@ async def delete_provider(
     from src.services.codex_catalog import maybe_sync_background
     maybe_sync_background()
 
-    logger.info(f"admin deleted provider {provider.name} (admin={admin.get('email')}): {len(orphans)} orphan models")
-    return {"message": "Provider deleted", "deleted": {"channels": len(orphans) + 0, "models": len(orphans)}}
+    logger.info(f"admin deleted provider {provider.name} (admin={admin.get('email')}): {deleted.rowcount} models")
+    return {"message": "Provider deleted", "deleted": {"models": deleted.rowcount}}
 
 
 @router.post("/admin/providers/{provider_id}/sync")
@@ -264,3 +260,90 @@ async def test_provider(
         return {"ok": ok, "message": "连接正常" if ok else "连接失败（上游不可达或 Key 无效）"}
     except Exception as e:
         return {"ok": False, "message": f"连接失败: {e}"}
+
+
+# ── 模型参考价/上下文（界面可管理的官方核对数据源）──────────────────────────
+
+def _convert_price(value, from_currency: str, to_currency: Optional[str]) -> Optional[float]:
+    """价格换算：存储为「原始币种+金额」，跨币种显示时实时换算（同币种直接返回）"""
+    if value is None:
+        return None
+    v = float(value)
+    fc = (from_currency or "USD").upper()
+    tc = (to_currency or "USD").upper()
+    if fc == tc:
+        return v
+    if tc == "CNY" and fc == "USD":
+        return round(v * settings.usd_to_cny_rate, 4)
+    if tc == "USD" and fc == "CNY":
+        return round(v / settings.usd_to_cny_rate, 4)
+    return v
+
+
+def _ref_to_dict(r: ModelReference, currency: Optional[str] = None) -> dict:
+    return {
+        "model_id": r.model_id,
+        "vendor": r.vendor,
+        "upstream_model": r.upstream_model,
+        "display_name": r.display_name,
+        "input_price": _convert_price(r.input_price, r.price_currency, currency),
+        "output_price": _convert_price(r.output_price, r.price_currency, currency),
+        "price_currency": r.price_currency,
+        "context_window": r.context_window,
+        "price_source": r.price_source,
+    }
+
+
+class ReferenceUpsert(BaseModel):
+    model_id: str
+    vendor: Optional[str] = None
+    upstream_model: Optional[str] = None
+    display_name: Optional[str] = None
+    input_price: Optional[float] = None
+    output_price: Optional[float] = None
+    context_window: Optional[int] = None
+    price_source: str = "manual"
+    currency: Optional[str] = None   # 客户端提交金额所用币种（原始币种直接存储，不预设换算）
+
+
+@router.get("/admin/references")
+async def list_references(currency: Optional[str] = None, admin: dict = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
+    """模型参考价/上下文列表（官方核对数据源，界面管理）"""
+    refs = (await db.execute(select(ModelReference).order_by(ModelReference.model_id))).scalars().all()
+    return {"object": "list", "data": [_ref_to_dict(r, currency) for r in refs]}
+
+
+@router.post("/admin/references")
+async def upsert_reference(req: ReferenceUpsert, admin: dict = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
+    """创建/更新模型参考价（按 model_id upsert；存「原始币种+金额」不做预设换算）"""
+    ref = await db.get(ModelReference, req.model_id)
+    price_currency = (req.currency or "USD").upper()
+    if ref:
+        ref.vendor = req.vendor
+        ref.upstream_model = req.upstream_model
+        ref.display_name = req.display_name
+        ref.input_price = req.input_price
+        ref.output_price = req.output_price
+        ref.price_currency = price_currency
+        ref.context_window = req.context_window
+        ref.price_source = req.price_source
+    else:
+        ref = ModelReference(
+            model_id=req.model_id, vendor=req.vendor, upstream_model=req.upstream_model,
+            display_name=req.display_name, input_price=req.input_price, output_price=req.output_price,
+            price_currency=price_currency, context_window=req.context_window, price_source=req.price_source,
+        )
+        db.add(ref)
+    await db.commit()
+    return _ref_to_dict(ref)
+
+
+@router.delete("/admin/references/{model_id}")
+async def delete_reference(model_id: str, admin: dict = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
+    """删除模型参考价"""
+    ref = await db.get(ModelReference, model_id)
+    if not ref:
+        raise HTTPException(status_code=404, detail={"error": {"message": "Reference not found", "type": "not_found", "code": "reference_not_found"}})
+    await db.delete(ref)
+    await db.commit()
+    return {"message": "deleted", "model_id": model_id}

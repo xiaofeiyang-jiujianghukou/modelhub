@@ -28,12 +28,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from sqlalchemy import func, select  # noqa: E402
 
-from src.models import Provider, User  # noqa: E402
+from src.db.models import Provider, User  # noqa: E402
 from src.services.crypto import decrypt_credentials, encrypt_credentials  # noqa: E402
 
 # .env 变量名 → 数据库供应商名
 ENV_KEY_MAP = {
-    "ARK_API_KEY": "ark-plan",
+    "ARK_API_KEY": "ark",
     "DEEPSEEK_API_KEY": "deepseek",
     "GLM_API_KEY": "glm",
 }

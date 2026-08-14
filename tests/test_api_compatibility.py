@@ -7,12 +7,12 @@ import pytest
 import httpx
 
 from src.main import app
-from src.models import Balance
+from src.db.models import Balance
 
 
 async def _setup_user(test_engine):
     """在测试库中创建用户 + Key + 模型"""
-    from src.models import ApiKey, Balance, ModelCatalog, Provider, RouteChannel, User
+    from src.db.models import ApiKey, Balance, Model, Provider, User
     from src.middleware.auth import _generate_api_key, _hash_api_key, _key_prefix
 
     factory = __import__("sqlalchemy.ext.asyncio", fromlist=["async_sessionmaker"]).async_sessionmaker(
@@ -29,12 +29,11 @@ async def _setup_user(test_engine):
             user_id=user.id, name="compat", key_prefix=_key_prefix(raw), key_hash=_hash_api_key(raw),
         ))
 
-        model = ModelCatalog(id="compat-model", model_type="llm", input_price=1.0, output_price=3.0)
+        model = Model(model="compat-model", vendor="mock", model_type="llm", input_price=1.0, output_price=3.0, upstream_model="compat-model")
         db.add(model)
         provider = Provider(name="mock", base_url="https://mock", auth_type="bearer", credentials_enc="{}")
         db.add(provider)
         await db.flush()
-        db.add(RouteChannel(model_id=model.id, provider_id=provider.id, upstream_model=model.id, weight=100, priority=100))
         await db.commit()
         return raw
 
@@ -48,7 +47,7 @@ async def test_chat_basic_request(test_engine, _patch_global_db):
         resp = await ac.post(
             "/v1/chat/completions",
             json={
-                "model": "compat-model",
+                "model": "mock/compat-model",
                 "messages": [{"role": "user", "content": "Hello"}],
                 "max_tokens": 50,
             },

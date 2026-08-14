@@ -18,11 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.models import ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, ModelReference, Provider
 from src.providers.provider_registry import (
     ProviderSpec, _excluded, get_spec,
 )
 from src.services.crypto import decrypt_credentials
+from src.services import model_reference
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SyncedModel:
     model_type: str = "llm"
     input_price: Optional[float] = None
     output_price: Optional[float] = None
+    price_currency: str = "USD"
     context_window: Optional[int] = None
     price_source: str = "default"
     upstream_model: Optional[str] = None   # 上游真实模型名（static 清单与网关 id 可能不同）
@@ -230,96 +232,98 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
         if not api_key:
             raise ValueError("未配置 API Key，请先填写订阅密钥")
         if spec.model_source == "static":
+            # static 供应商：模型清单 + 价格 + 上下文从 model_references 表查（界面/种子维护）
+            refs = await model_reference.static_models_for(db, spec.key)
             synced = [
                 SyncedModel(
-                    id=m.id, display_name=m.display_name, owned_by=spec.key,
-                    input_price=m.input_price, output_price=m.output_price,
-                    context_window=m.context_window, price_source=m.price_source,
-                    upstream_model=m.upstream_model,
+                    id=r.model_id, display_name=r.display_name, owned_by=spec.key,
+                    input_price=float(r.input_price) if r.input_price is not None else None,
+                    output_price=float(r.output_price) if r.output_price is not None else None,
+                    price_currency=r.price_currency,
+                    context_window=r.context_window, price_source=r.price_source,
+                    upstream_model=r.upstream_model or r.model_id,
                 )
-                for m in spec.static_models
+                for r in refs
             ]
         else:
             synced = await fetch_models(
                 spec, provider.base_url, api_key,
                 timeout=max(provider.timeout_ms / 1000.0, settings.upstream_timeout_seconds),
             )
-            # api 拉取模型定价：官方核对价（known_prices）优先，否则回填注册表默认价
-            known = {mid: (ip, op) for mid, ip, op in spec.known_prices}
-            known_ctx = dict(spec.known_contexts)
+            # 模型 ID 归一化：上游命名 → 网关统一 ID（同名模型合并，保留原始上游名用于路由）
+            id_map = dict(spec.model_id_map)
             for sm in synced:
-                if sm.input_price is None or sm.output_price is None:
-                    if sm.id in known:
-                        sm.input_price, sm.output_price = known[sm.id]
-                        sm.price_source = "official"
+                mapped = id_map.get(sm.id)
+                if mapped:
+                    sm.upstream_model = sm.id
+                    sm.id = mapped
+            # api 拉取：价格/上下文优先用上游返回；上游缺失时用 model_references 表兜底
+            for sm in synced:
+                ref = await model_reference.reference_for(db, sm.id)
+                ref_ip = float(ref.input_price) if ref and ref.input_price is not None else None
+                ref_op = float(ref.output_price) if ref and ref.output_price is not None else None
+                if (sm.input_price is None or sm.output_price is None):
+                    if ref_ip is not None and ref_op is not None:
+                        sm.input_price, sm.output_price = ref_ip, ref_op
+                        sm.price_currency = ref.price_currency or "USD"
+                        sm.price_source = ref.price_source or "official"
                     else:
-                        sm.input_price = spec.default_prices.input_price
-                        sm.output_price = spec.default_prices.output_price
+                        # 官方未定价：不填网关默认价（避免误导），保持 None，price_source 标记 default
                         sm.price_source = "default"
-                # 上下文：上游未返回时用官方核对值
-                if sm.context_window is None and sm.id in known_ctx:
-                    sm.context_window = known_ctx[sm.id]
+                # 上下文：上游未返回时用表内参考值
+                if sm.context_window is None and ref and ref.context_window is not None:
+                    sm.context_window = ref.context_window
 
-        # 2. 事务内 upsert
+        # 2. 事务内 upsert（模型名 + 厂商 复合唯一）
         for sm in synced:
-            model = await db.get(ModelCatalog, sm.id)
+            upstream = sm.upstream_model or sm.id
+            model = await db.scalar(
+                select(Model).where(
+                    Model.model == sm.id,
+                    Model.vendor == spec.key,
+                )
+            )
             if model:
                 if sm.display_name:
                     model.display_name = sm.display_name
                 if sm.context_window is not None:
                     model.context_window = sm.context_window
                 # 价格：官方价优先——已有 official 价的模型不被 default 价覆盖
-                # （多供应商共模型场景，如 Token Plan 拉取的 deepseek-v4-pro 与 DeepSeek 官方同 ID）
                 price_conflict = (model.price_source == "official") and (sm.price_source == "default")
                 if sm.input_price is not None and not price_conflict:
                     model.input_price = sm.input_price
+                    model.price_currency = sm.price_currency
                     model.price_source = sm.price_source
                 if sm.output_price is not None and not price_conflict:
                     model.output_price = sm.output_price
+                    model.price_currency = sm.price_currency
                     model.price_source = sm.price_source
                 if not model.price_source:
                     model.price_source = sm.price_source
+                model.upstream_model = upstream
                 model.synced_from = spec.key
                 model.last_synced_at = now
+                model.is_active = True
                 result.updated += 1
             else:
-                db.add(ModelCatalog(
-                    id=sm.id,
+                db.add(Model(
+                    model=sm.id,
+                    vendor=spec.key,
                     display_name=sm.display_name or sm.id,
                     owned_by=sm.owned_by or spec.key,
                     model_type=sm.model_type,
                     input_price=sm.input_price,
                     output_price=sm.output_price,
+                    price_currency=sm.price_currency,
                     context_window=sm.context_window,
                     price_source=sm.price_source,
+                    upstream_model=upstream,
                     synced_from=spec.key,
                     last_synced_at=now,
                     route_strategy="weighted_random",
                     is_active=True,
                 ))
                 result.added += 1
-
-            # 通道 upsert（model_id + provider_id 唯一）
-            # upstream 用上游真实模型名（static 清单可配置；api 拉取即上游 id）
-            upstream = sm.upstream_model or sm.id
-            channel = await db.scalar(
-                select(RouteChannel).where(
-                    RouteChannel.model_id == sm.id,
-                    RouteChannel.provider_id == provider.id,
-                )
-            )
-            if channel:
-                channel.upstream_model = upstream
-                channel.is_active = True
-            else:
-                db.add(RouteChannel(
-                    model_id=sm.id,
-                    provider_id=provider.id,
-                    upstream_model=upstream,
-                    weight=100,
-                    priority=100,
-                    is_active=True,
-                ))
             result.model_ids.append(sm.id)
 
         # 3. 更新 provider 同步状态

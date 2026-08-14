@@ -6,12 +6,42 @@
 import pytest
 from sqlalchemy import select
 
-from src.models import Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.services.router import (
     RouterService, _select_channel, _weighted_random, _mark_channel_error,
 )
+from src.services.model_key import parse_model_key, format_model_key, strip_context_suffix
 
 router_service = RouterService()
+
+
+# ── 模型键解析（厂商/模型 新格式 + @ 旧格式兼容 + [1M] 后缀剥离）──────────────
+
+class TestParseModelKey:
+    def test_vendor_first_slash(self):
+        """新格式：厂商/模型"""
+        assert parse_model_key("deepseek/deepseek-v4-pro") == ("deepseek-v4-pro", "deepseek")
+
+    def test_vendor_first_slash_with_context_suffix(self):
+        """新格式：厂商/模型[1M] 剥离上下文后缀"""
+        assert parse_model_key("deepseek/deepseek-v4-flash[1M]") == ("deepseek-v4-flash", "deepseek")
+        assert parse_model_key("deepseek/deepseek-v4-flash[1m]") == ("deepseek-v4-flash", "deepseek")
+        assert parse_model_key("ark/glm-5.2[128K]") == ("glm-5.2", "ark")
+
+    def test_legacy_at_format(self):
+        """旧格式兼容：模型@厂商"""
+        assert parse_model_key("deepseek-v4-pro@deepseek") == ("deepseek-v4-pro", "deepseek")
+
+    def test_bare_name(self):
+        """裸模型名 → 无厂商"""
+        assert parse_model_key("glm-5.2") == ("glm-5.2", None)
+
+    def test_format_model_key(self):
+        """对外唯一键 = 厂商/模型"""
+        assert format_model_key("deepseek-v4-pro", "deepseek") == "deepseek/deepseek-v4-pro"
+
+    def test_strip_context_suffix(self):
+        assert strip_context_suffix("deepseek-v4-flash[1M]") == "deepseek-v4-flash"
 
 
 # ── 加权随机选择 ───────────────────────────────────────────────────────────────
@@ -72,50 +102,39 @@ class TestSelectChannel:
         assert result is None
 
 
-# ── 故障转移 ───────────────────────────────────────────────────────────────────
+# ── 精确路由（vendor/model 唯一确定一条路）──────────────────────────────────
 
-class TestFailover:
+class TestPreciseRouting:
     @pytest.mark.asyncio
-    async def test_route_fails_over_to_backup(self, db_session, seed_model):
-        """主通道失败时自动切换到备用通道"""
-        from sqlalchemy import select as sa_select
-        from src.models import RouteChannel as RC
+    async def test_precise_vendor_model_returns_only_that_channel(self, db_session, seed_model):
+        """'厂商/模型' 唯一键只返回该厂商通道，不会跨厂商兜底"""
+        from src.services.model_key import format_model_key
 
-        # 查询主通道（避免 lazy-load）
-        primary_result = await db_session.execute(
-            sa_select(RC).where(RC.model_id == seed_model.id)
-        )
-        primaries = primary_result.scalars().all()
-        assert len(primaries) == 1
-        primary = primaries[0]
-
-        # 添加第二个通道（备用）
-        result = await db_session.execute(select(Provider).where(Provider.name == "mock"))
-        provider = result.scalar_one()
-        backup = RouteChannel(
-            model_id=seed_model.id,
-            provider_id=provider.id,
-            upstream_model=seed_model.id,
-            weight=50,
-            priority=50,  # 低优先级，作为备用
+        # 添加另一个厂商的同模型名记录
+        backup_provider = Provider(name="mock2", base_url="https://mock2.internal", auth_type="bearer", credentials_enc="{}")
+        db_session.add(backup_provider)
+        await db_session.flush()
+        backup = Model(
+            model=seed_model.model, vendor="mock2", model_type="llm",
+            upstream_model=seed_model.model, weight=50, priority=50,
         )
         db_session.add(backup)
         await db_session.commit()
 
-        # 模拟主通道熔断（health_status=circuit_open + 冷却期）
-        from datetime import datetime, timedelta, timezone
-        primary.health_status = "circuit_open"
-        primary.circuit_open_until = datetime.now(timezone.utc) + timedelta(minutes=5)
-        await db_session.commit()
+        channels, strategy = await router_service.get_channels(
+            db_session, format_model_key(seed_model.model, "mock")
+        )
+        assert len(channels) == 1
+        assert channels[0].vendor == "mock"  # 只路由用户指定的厂商
 
-        # 路由应该跳过主通道，选择备用通道
-        model_id = await router_service.resolve_model_id(db_session, seed_model.id)
-        channels, strategy = await router_service.get_channels(db_session, model_id)
-        assert len(channels) == 2
-
-        selected = _select_channel(channels, strategy)
-        assert selected is not None
-        assert selected.id == backup.id  # 备用通道被选中
+    @pytest.mark.asyncio
+    async def test_unknown_vendor_returns_empty(self, db_session, seed_model):
+        """厂商不存在时返回空通道（由调用方透传上游错误）"""
+        from src.services.model_key import format_model_key
+        channels, _ = await router_service.get_channels(
+            db_session, format_model_key(seed_model.model, "no-such-vendor")
+        )
+        assert channels == []
 
 
 # ── 熔断器 ─────────────────────────────────────────────────────────────────────

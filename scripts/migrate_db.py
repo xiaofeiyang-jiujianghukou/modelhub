@@ -32,6 +32,11 @@ MIGRATIONS = [
         ("price_source", "VARCHAR(10) NOT NULL DEFAULT 'default'"),
         ("last_synced_at", "DATETIME"),
         ("synced_from", "VARCHAR(100)"),
+        ("price_currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
+        ("alias", "VARCHAR(100)"),
+    ]),
+    ("model_references", [
+        ("price_currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
     ]),
 ]
 
@@ -59,11 +64,34 @@ async def _tables_exist(conn) -> set[str]:
     return {r[0] for r in rows}
 
 
+async def _drop_table_if_exists(conn, table: str) -> bool:
+    """删除已废弃的表（如 model_aliases），表不存在时跳过"""
+    tables = await _tables_exist(conn)
+    if table in tables:
+        await conn.execute(text(f"DROP TABLE {table}"))
+        return True
+    return False
+
+
+async def _rename_column(conn, table: str, old: str, new: str) -> bool:
+    """SQLite 3.25+ 支持 RENAME COLUMN；旧列存在且新列不存在时执行"""
+    existing = await _existing_columns(conn, table)
+    if old in existing and new not in existing:
+        await conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}"))
+        return True
+    return False
+
+
 async def run_db_migrations(engine=engine) -> list[str]:
     """执行待应用迁移，返回已应用的列名列表（幂等）"""
     applied: list[str] = []
     async with engine.begin() as conn:
         tables = await _tables_exist(conn)
+        if "models" in tables:
+            if await _rename_column(conn, "models", "id", "model"):
+                applied.append("models.id->model")
+        if await _drop_table_if_exists(conn, "model_aliases"):
+            applied.append("model_aliases.dropped")
         for table, columns in MIGRATIONS:
             if table not in tables:
                 continue

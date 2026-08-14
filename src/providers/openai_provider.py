@@ -12,6 +12,33 @@ from loguru import logger
 from src.providers.base import BaseProvider
 
 
+# reasoning_content 透传缓存：tool_call_id → reasoning_content
+# DeepSeek thinking mode 要求多轮对话把上一轮 assistant 的 reasoning_content 原样传回，
+# 但 Anthropic/Responses 协议无此字段，客户端不会回传。网关在此缓存（响应方向），
+# 下一轮请求按 tool_call_id 补回（请求方向），对客户端透明，保持模型完整思考能力。
+_reasoning_cache: dict[str, str] = {}
+
+
+def _restore_reasoning(messages: list[dict]) -> None:
+    """请求方向：按 assistant 消息的首个 tool_call id 补回缓存的 reasoning_content（原地修改）"""
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            tc_id = m["tool_calls"][0].get("id", "")
+            if tc_id and tc_id in _reasoning_cache:
+                m["reasoning_content"] = _reasoning_cache[tc_id]
+
+
+def _cache_reasoning_from_message(message: dict) -> None:
+    """响应方向（非流式）：把 assistant 消息的 reasoning_content 按 tool_call id 缓存"""
+    reasoning = message.get("reasoning_content")
+    if not reasoning:
+        return
+    for tc in message.get("tool_calls") or []:
+        tc_id = tc.get("id", "")
+        if tc_id:
+            _reasoning_cache[tc_id] = reasoning
+
+
 class OpenAIProvider(BaseProvider):
     """OpenAI 官方 API 适配器（直接转发，格式已兼容）"""
 
@@ -59,6 +86,7 @@ class OpenAIProvider(BaseProvider):
     ) -> dict[str, Any]:
         """非流式对话：直接转发至 OpenAI"""
         body = {**payload, "model": upstream_model, "stream": False}
+        _restore_reasoning(body.get("messages", []))  # 多轮：按 tool_call_id 补回 reasoning_content
         async with self._client() as client:
             try:
                 resp = await client.post(
@@ -67,7 +95,11 @@ class OpenAIProvider(BaseProvider):
                     json=body,
                 )
                 resp.raise_for_status()
-                return resp.json()
+                result = resp.json()
+                # 缓存本轮 assistant 的 reasoning_content（供下一轮补回）
+                msg = (result.get("choices") or [{}])[0].get("message", {})
+                _cache_reasoning_from_message(msg)
+                return result
             except httpx.HTTPStatusError as exc:
                 logger.warning(
                     "openai upstream error status={} body={}",
@@ -89,8 +121,9 @@ class OpenAIProvider(BaseProvider):
         upstream_model: str,
         payload: dict[str, Any],
     ) -> AsyncGenerator[str, None]:
-        """流式对话：透明代理 SSE 流"""
+        """流式对话：透明代理 SSE 流（顺带累积 reasoning_content 缓存，不改 SSE 内容）"""
         body = {**payload, "model": upstream_model, "stream": True}
+        _restore_reasoning(body.get("messages", []))  # 多轮：按 tool_call_id 补回 reasoning_content
         async with self._client() as client:
             try:
                 async with client.stream(
@@ -117,8 +150,24 @@ class OpenAIProvider(BaseProvider):
                         yield f"data: {err}\n\n"
                         yield f"data: [DONE]\n\n"
                         return
+                    reasoning_parts: list[str] = []
+                    cached_ids: set[str] = set()
                     async for line in resp.aiter_lines():
                         if line:
+                            # 累积 reasoning_content，首个 tool_call id 出现时缓存（供下一轮补回）
+                            if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+                                try:
+                                    chunk = json.loads(line[6:].strip())
+                                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                                    if delta.get("reasoning_content"):
+                                        reasoning_parts.append(delta["reasoning_content"])
+                                    for tc in delta.get("tool_calls") or []:
+                                        tc_id = tc.get("id")
+                                        if tc_id and tc_id not in cached_ids and reasoning_parts:
+                                            _reasoning_cache[tc_id] = "".join(reasoning_parts)
+                                            cached_ids.add(tc_id)
+                                except Exception:
+                                    pass
                             yield line + "\n"
             except Exception as exc:
                 logger.error("openai stream failed: {}", exc)

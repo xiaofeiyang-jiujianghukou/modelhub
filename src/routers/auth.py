@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import ApiKey, RequestLog, User
+from src.db.models import ApiKey, RequestLog, User
 from src.middleware.auth import auth_service, get_current_user_jwt, get_api_key_user
 
 router = APIRouter(tags=["Auth"])

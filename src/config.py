@@ -56,8 +56,10 @@ class Settings(BaseSettings):
     # ── 路由配置 ────────────────────────────────────────────────
     max_retries: int = 2               # 故障转移最大重试次数
     upstream_timeout_seconds: float = 30.0
-    # Anthropic 协议层默认模型（claude-* 请求映射到该模型）
-    default_claude_model: str = "deepseek-v4-flash"
+    # Anthropic 协议层默认模型（claude-* 请求映射到该模型）；glm-4-flash 免费，便于测试
+    default_claude_model: str = "glm/glm-4-flash"
+    # 币种换算：价格统一以 USD 存储，接口按需换算返回 CNY
+    usd_to_cny_rate: float = 7.2
 
     # ── Codex 模型目录（模型变化时自动重写，Codex 启动时加载最新清单）────────
     codex_catalog_path: Optional[str] = None   # 如 /home/xxx/.codex/model-catalog.local.json

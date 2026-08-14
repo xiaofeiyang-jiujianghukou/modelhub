@@ -12,9 +12,10 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import event
 
 from src.config import settings
-from src.models import Base
+from src.db.models import Base
 
 # ── 引擎 ─────────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ def _make_engine() -> AsyncEngine:
     # SQLite 需要 check_same_thread=False 才能在异步中使用
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 30  # busy_timeout：写锁冲突时等待而非立即报 database is locked
     return create_async_engine(
         url,
         echo=settings.debug,
@@ -33,6 +35,17 @@ def _make_engine() -> AsyncEngine:
 
 
 engine: AsyncEngine = _make_engine()
+
+# SQLite 并发优化：WAL 模式（读不阻塞写）+ 长 busy_timeout，缓解后台同步与前台请求的写锁冲突
+if settings.database_url.startswith("sqlite"):
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=30000")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
 
 # async_sessionmaker 工厂
 AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(

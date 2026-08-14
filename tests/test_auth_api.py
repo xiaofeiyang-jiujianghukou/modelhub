@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from src.main import app
-from src.models import ApiKey
+from src.db.models import ApiKey
 
 
 @pytest.fixture

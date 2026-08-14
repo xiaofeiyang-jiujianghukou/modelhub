@@ -26,18 +26,19 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from src.database import init_db  # noqa: E402
-from src.models import Base, Provider, ModelCatalog, RouteChannel, User, Balance  # noqa: E402
+from src.db.models import Base, Provider, Model, User, Balance  # noqa: E402
 from sqlalchemy import select, func  # noqa: E402
 
 from src.providers.provider_registry import PROVIDER_REGISTRY  # noqa: E402
 from src.services.crypto import encrypt_credentials  # noqa: E402
+from src.services import model_reference  # noqa: E402
 from scripts.generate_encryption_key import ensure_encryption_key  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.middleware.auth import _hash_password  # noqa: E402
 
 # .env 环境变量 → 供应商 key 映射（static 供应商种子时读取）
 ENV_KEY_MAP = {
-    "ARK_API_KEY": "ark-plan",
+    "ARK_API_KEY": "ark",
     "DEEPSEEK_API_KEY": "deepseek",
     "GLM_API_KEY": "glm",
 }
@@ -74,6 +75,11 @@ async def seed(reset: bool = False) -> None:
             db.add(Balance(user_id=admin.id, amount_usd=settings.signup_bonus_usd))
             print("  ➕ 初始管理员: admin@modelhub.com / modelhub")
 
+        # 步骤 2: 模型参考价/上下文种子（JSON → model_references 表，幂等）
+        ref_count = await model_reference.seed_from_json(db)
+        if ref_count:
+            print(f"  🌱 参考数据种子导入：新增 {ref_count} 条")
+
         created_providers = 0
         created_models = 0
         for key, spec in PROVIDER_REGISTRY.items():
@@ -105,36 +111,30 @@ async def seed(reset: bool = False) -> None:
             key_status = "✅" if api_key else "⚠️ 无 Key"
             print(f"  ➕ {spec.key}: 已创建 ({key_status})")
 
-            # ── 模型 + 路由 ensure-exists ──
-            for m in spec.static_models:
-                model = await db.get(ModelCatalog, m.id)
+            # ── 模型 + 路由 ensure-exists（清单来自 model_references 表）──
+            for ref in await model_reference.static_models_for(db, spec.key):
+                model = await db.get(Model, (ref.model_id, spec.key))
                 if model:
                     continue
-                model = ModelCatalog(
-                    id=m.id,
-                    display_name=m.display_name,
+                model = Model(
+                    model=ref.model_id,
+                    vendor=spec.key,
+                    display_name=ref.display_name,
                     owned_by=spec.key,
                     model_type="llm",
-                    input_price=m.input_price,
-                    output_price=m.output_price,
-                    context_window=m.context_window,
-                    price_source=m.price_source,
+                    input_price=float(ref.input_price) if ref.input_price is not None else None,
+                    output_price=float(ref.output_price) if ref.output_price is not None else None,
+                    price_currency=ref.price_currency,
+                    context_window=ref.context_window,
+                    price_source=ref.price_source,
+                    upstream_model=ref.upstream_model or ref.model_id,
                     synced_from=spec.key,
                     route_strategy="priority",
                     is_active=True,
                 )
                 db.add(model)
-                await db.flush()
-                db.add(RouteChannel(
-                    model_id=m.id,
-                    provider_id=provider.id,
-                    upstream_model=m.upstream_model,
-                    weight=100,
-                    priority=100,
-                    is_active=True,
-                ))
                 created_models += 1
-                print(f"    ➕ 模型: {m.id}")
+                print(f"    ➕ 模型: {ref.model_id} ({spec.key})")
 
         await db.commit()
         print(f"\n🎉 完成：新增 {created_providers} 个供应商，{created_models} 个模型（已存在项均跳过）")

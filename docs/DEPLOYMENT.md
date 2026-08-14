@@ -323,10 +323,12 @@ AgentTeam/
 │   │   ├── openai_provider.py
 │   │   ├── anthropic_provider.py
 │   │   └── gemini_provider.py
+│   ├── db/
+│   │   └── models.py      # SQLAlchemy ORM
 │   ├── routers/
 │   │   ├── chat.py          # /v1/chat/completions
 │   │   ├── images.py        # /v1/images/generations
-│   │   ├── models_list.py   # /v1/models
+│   │   ├── models.py       # /v1/models
 │   │   └── dashboard.py     # /v1/dashboard/balance
 │   └── services/
 │       ├── router.py        # 路由服务

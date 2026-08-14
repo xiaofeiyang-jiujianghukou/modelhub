@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from src.models import ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.services import codex_catalog
 from src.services.crypto import encrypt_credentials
 
@@ -30,15 +30,12 @@ async def test_load_visible_models_rule(db_session):
 
     # 三个模型分别挂不同供应商
     for mid, prov in [("m-ok", ok), ("m-nokey", no_key), ("m-nosync", not_synced)]:
-        db_session.add(ModelCatalog(id=mid, display_name=mid, model_type="llm", is_active=True))
-        await db_session.flush()
-        db_session.add(RouteChannel(model_id=mid, provider_id=prov.id,
-                                    upstream_model=mid, weight=100, priority=100))
+        db_session.add(Model(model=mid, vendor=prov.name, display_name=mid, model_type="llm", is_active=True, upstream_model=mid))
     await db_session.commit()
 
     models = await codex_catalog.load_visible_models(db_session)
     ids = {m["id"] for m in models}
-    assert ids == {"m-ok"}
+    assert ids == {"openai/m-ok"}
     assert "m-nokey" not in ids
     assert "m-nosync" not in ids
 
@@ -47,7 +44,7 @@ def test_render_catalog_merge():
     """合并：保留已有自定义字段、新增补模板、删除消失的"""
     gateway = [
         {"id": "keep-model", "display_name": "Keep", "context_window": 131072, "synced_from": "glm"},
-        {"id": "ark-deepseek-v4-pro", "display_name": "New", "context_window": None, "synced_from": "ark-plan"},
+        {"id": "deepseek-v4-pro", "display_name": "New", "context_window": None, "synced_from": "ark"},
     ]
     existing = {"models": [
         {"slug": "keep-model", "display_name": "【自定义】Keep", "description": "用户备注",
@@ -58,14 +55,14 @@ def test_render_catalog_merge():
 
     catalog = codex_catalog.render_catalog(gateway, existing)
     slugs = {m["slug"] for m in catalog["models"]}
-    assert slugs == {"keep-model", "ark-deepseek-v4-pro"}
+    assert slugs == {"keep-model", "deepseek-v4-pro"}
 
     keep = next(m for m in catalog["models"] if m["slug"] == "keep-model")
     assert keep["display_name"] == "【自定义】Keep"          # 自定义名称保留
     assert keep["description"] == "[智谱][keep-model]"       # 描述统一 [厂商][模型名]
     assert keep["context_window"] == 131072                  # 上下文以网关为准更新
 
-    new = next(m for m in catalog["models"] if m["slug"] == "ark-deepseek-v4-pro")
+    new = next(m for m in catalog["models"] if m["slug"] == "deepseek-v4-pro")
     assert new["display_name"] == "New"
     assert new["description"] == "[方舟][deepseek-v4-pro]"   # ark- 前缀剥离
     assert new["supports_parallel_tool_calls"] is True       # 模板字段补齐
@@ -79,18 +76,15 @@ async def test_sync_codex_catalog_writes_file(db_session, tmp_path, monkeypatch)
     p = _provider("glm")
     db_session.add(p)
     await db_session.flush()
-    db_session.add(ModelCatalog(id="glm-4-flash", display_name="GLM-4 Flash",
-                                model_type="llm", context_window=131072, is_active=True))
-    await db_session.flush()
-    db_session.add(RouteChannel(model_id="glm-4-flash", provider_id=p.id,
-                                upstream_model="glm-4-flash", weight=100, priority=100))
+    db_session.add(Model(model="glm-4-flash", vendor=p.name, display_name="GLM-4 Flash",
+                                model_type="llm", context_window=131072, is_active=True, upstream_model="glm-4-flash"))
     await db_session.commit()
 
     out = tmp_path / "model-catalog.json"
     stats = await codex_catalog.sync_codex_catalog(db_session, path=out)
     assert stats["total"] == 1
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert data["models"][0]["slug"] == "glm-4-flash"
+    assert data["models"][0]["slug"] == "glm/glm-4-flash"
     assert data["models"][0]["context_window"] == 131072
 
 

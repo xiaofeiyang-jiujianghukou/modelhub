@@ -11,7 +11,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from src.main import app
-from src.models import ModelCatalog, Provider, RouteChannel
+from src.db.models import Model, Provider
 from src.services import model_sync
 
 
@@ -62,7 +62,7 @@ class TestRegistry:
         keys = {d["key"] for d in data}
         # 11 家
         assert len(data) == 11
-        for k in ["deepseek", "ark-plan", "hunyuan", "bailian", "moonshot", "glm",
+        for k in ["deepseek", "ark", "hunyuan", "bailian", "moonshot", "glm",
                   "minimax", "openai", "anthropic", "grok", "gemini"]:
             assert k in keys
 
@@ -86,7 +86,7 @@ class TestProviderCrud:
         assert resp.status_code == 200
         data = resp.json()
         assert data["sync"]["status"] == "done"
-        assert data["sync"]["result"]["added"] == 4
+        assert data["sync"]["result"]["added"] == 3
 
         provider = data["id"]
         # 凭证加密存储（gcm:v1: 前缀），列表接口不返回明文
@@ -97,11 +97,11 @@ class TestProviderCrud:
         listing = (await client.get("/v1/admin/providers", headers=headers)).json()
         item = next(i for i in listing["data"] if i["id"] == provider)
         assert item["has_key"] is True
-        assert item["model_count"] == 4
+        assert item["model_count"] == 3
         assert "credentials" not in item
 
         # 模型入库
-        m = await db_session.get(ModelCatalog, "glm-4-flash")
+        m = (await db_session.execute(select(Model).where(Model.model == "glm-4-flash").limit(1))).scalars().first()
         assert m is not None
         assert m.price_source == "official"
 
@@ -146,32 +146,31 @@ class TestProviderCrud:
         headers = await _register(client, "admin@test.com")
         pid = (await client.post("/v1/admin/providers", headers=headers,
                                  json={"name": "glm", "credentials": {"api_key": "sk-x"}})).json()["id"]
-        assert await db_session.get(ModelCatalog, "glm-4-flash") is not None
+        assert (await db_session.execute(select(Model).where(Model.model == "glm-4-flash").limit(1))).scalars().first() is not None
 
-        # 造一个共有模型：glm-5-2 额外挂到 mock provider（模拟多供应商共享）
+        # 造一个共有模型：glm-5.2 额外挂到 mock provider（模拟多供应商共享）
         mock_provider = await db_session.scalar(select(Provider).where(Provider.name == "mock"))
         if not mock_provider:
             mock_provider = Provider(name="mock", base_url="https://mock.internal",
                                      auth_type="bearer", credentials_enc="{}")
             db_session.add(mock_provider)
             await db_session.flush()
-        db_session.add(RouteChannel(model_id="glm-5-2", provider_id=mock_provider.id,
-                                    upstream_model="glm-5.2", weight=50, priority=50))
+        db_session.add(Model(model="glm-5.2", vendor="mock", model_type="llm", upstream_model="glm-5.2", weight=50, priority=50))
         await db_session.commit()
 
         resp = await client.delete(f"/v1/admin/providers/{pid}", headers=headers)
         assert resp.status_code == 200
         deleted = resp.json()["deleted"]
 
-        # 独占模型 glm-4-flash / glm-5-1 被删；共有 glm-5-2 保留
-        assert await db_session.get(ModelCatalog, "glm-4-flash") is None
-        assert await db_session.get(ModelCatalog, "glm-5-1") is None
-        assert await db_session.get(ModelCatalog, "glm-5-2") is not None
+        # 删除供应商 = 删 vendor=glm 的全部 3 个模型记录；mock 的 glm-5.2（vendor=mock）保留
+        assert (await db_session.execute(select(Model).where(Model.model == "glm-4-flash").limit(1))).scalars().first() is None
+        assert (await db_session.execute(select(Model).where(Model.model == "glm-5.3").limit(1))).scalars().first() is None
+        assert (await db_session.execute(select(Model).where(Model.model == "glm-5.2", Model.vendor == "mock").limit(1))).scalars().first() is not None
         assert await db_session.get(Provider, pid) is None
         assert deleted["models"] == 3
 
-        # 通道也清理了
-        chans = (await db_session.execute(select(RouteChannel).where(RouteChannel.provider_id == pid))).scalars().all()
+        # glm 厂商的模型记录也清理了
+        chans = (await db_session.execute(select(Model).where(Model.vendor == "glm"))).scalars().all()
         assert len(chans) == 0
 
     async def test_delete_nonexistent_404(self, client):
@@ -193,7 +192,7 @@ class TestProviderSyncAndTest:
 
         headers = await _register(client, "admin@test.com")
         pid = (await client.post("/v1/admin/providers", headers=headers,
-                                 json={"name": "deepseek", "credentials": {"api_key": "sk-ds"}})).json()["id"]
+                                 json={"name": "deepseek", "credentials": {"api_key": "sk-ds"}, "auto_sync": False})).json()["id"]
         resp = await client.post(f"/v1/admin/providers/{pid}/sync", headers=headers)
         assert resp.status_code == 200
         body = resp.json()

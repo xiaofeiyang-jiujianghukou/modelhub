@@ -4,7 +4,7 @@ build_provider 工厂测试：修复非 mock 供应商无参实例化 TypeError�
 
 import pytest
 
-from src.models import Provider
+from src.db.models import Provider
 from src.providers import build_provider, get_provider
 from src.providers.openai_provider import OpenAIProvider
 from src.providers.anthropic_provider import AnthropicProvider

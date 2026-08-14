@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from src.models import ModelCatalog, Provider, RouteChannel, User
+from src.db.models import Model, Provider, User
 from src.services.crypto import decrypt_credentials, encrypt_credentials
 
 
@@ -49,7 +49,7 @@ class TestInitDbNoOverwrite:
         assert decrypt_credentials(refreshed.credentials_enc)["api_key"] == "sk-ui-updated-999"
 
         # 模型也被种子建出
-        m = await db_session.get(ModelCatalog, "glm-4-flash")
+        m = (await db_session.execute(select(Model).where(Model.model == "glm-4-flash").limit(1))).scalars().first()
         assert m is not None
         assert m.price_source == "official"
 
@@ -79,8 +79,8 @@ class TestMigrateProviders:
         from scripts.migrate_providers import migrate
         stats = await migrate()
 
-        assert set(stats["created"]) == {"ark-plan", "deepseek", "glm"}
-        for name in ["ark-plan", "deepseek", "glm"]:
+        assert set(stats["created"]) == {"ark", "deepseek", "glm"}
+        for name in ["ark", "deepseek", "glm"]:
             p = await db_session.scalar(select(Provider).where(Provider.name == name))
             assert p is not None
             assert p.credentials_enc.startswith("gcm:v1:")
@@ -88,7 +88,7 @@ class TestMigrateProviders:
 
         # 已有 Key → 跳过
         stats2 = await migrate()
-        assert stats2["skipped_existing"] == ["ark-plan", "deepseek", "glm"]
+        assert stats2["skipped_existing"] == ["ark", "deepseek", "glm"]
 
         # --overwrite 覆盖
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-new-deepseek-99999999")
@@ -99,7 +99,7 @@ class TestMigrateProviders:
 
     async def test_reencrypt_legacy(self, db_session):
         """legacy 明文凭证重加密为 gcm:v1: 格式"""
-        from src.models import Provider as P
+        from src.db.models import Provider as P
 
         legacy = P(name="openai", base_url="https://api.openai.com/v1",
                    auth_type="bearer", credentials_enc='{"api_key":"sk-legacy-plain-123"}')

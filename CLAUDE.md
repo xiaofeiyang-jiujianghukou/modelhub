@@ -6,7 +6,7 @@
 
 模枢 ModelHub —— 多模型智能编排网关（复刻 freemodel.dev 自建）。统一 API Key + Base URL，接入火山方舟、DeepSeek、GLM 智谱 3 家供应商的 15+ 模型，兼容 Claude Code、Codex、OpenAI SDK。
 
-- **技术栈**: FastAPI + SQLAlchemy(SQLite) + httpx；37 项 pytest 全通过
+- **技术栈**: FastAPI + SQLAlchemy(SQLite) + httpx；97 项 pytest 全通过
 - **三协议**: OpenAI `chat/completions`、OpenAI `responses`（Codex）、Anthropic `messages`（Claude Code）
 
 ## 常用命令
@@ -30,9 +30,12 @@ pytest tests/ -q                                  # 跑测试
 src/
 ├── main.py             # 应用入口，挂载全部 router（lifespan 自动跑结构迁移）
 ├── config.py           # 环境配置（DEBUG、凭证加密密钥等）
+├── database.py         # 异步 engine + AsyncSessionLocal（测试通过 monkeypatch 此模块隔离 DB）
+├── db/
+│   └── models.py       # SQLAlchemy ORM（Model/Provider/User 等全部表）
 ├── middleware/         # auth（API Key SHA-256 / JWT 双认证，首用户自动 admin）/ billing / rate_limit
 ├── providers/          # provider_registry.py（11 家供应商注册表，单一数据源）+ 适配器（openai/anthropic/gemini/mock）
-├── routers/            # chat / responses / anthropic / models_list / images / videos / auth / dashboard / web
+├── routers/            # chat / responses / anthropic / models / images / videos / auth / dashboard / web
 │                       #   + providers.py（供应商管理：CRUD/同步/级联删除，admin 权限）
 └── services/           # router.py（智能路由）/ model_sync.py（拉取模型 4 种解析器 + upsert）/ crypto.py（AES-256-GCM 凭证）
 web/                    # Web 控制台（注册登录、Key 管理、供应商管理、测试对话、余额/日志/模型面板）
@@ -50,9 +53,21 @@ scripts/                # init_db.py（种子）/ migrate_db.py（加列）/ mig
 
 1. **改模型/供应商后**：跑 `python scripts/init_db.py` 同步种子数据（幂等），再 `pytest tests/ -q` 验证
 2. **.env 格式参考 `.env.example`**，真实 Key 绝不提交入库
-3. **模型 ID 即路由键**：客户端指定的模型名经 `services/router.py` 的 `resolve_or_default` 解析，未知模型名兜底到默认 Claude 模型
+3. **模型键 = 厂商/模型（唯一路由键）**：`models` 表复合主键 `(model, vendor)`，同一模型多厂商是不同记录；客户端请求必须用 `厂商/模型`（如 `deepseek/deepseek-v4-pro`）或全局唯一别名（`models.alias`），不再支持裸模型名兜底
+   - 查询方法：`Model.get_by_model_and_vendor(db, model, vendor)` / `Model.get_by_alias(db, alias)`，别名全局唯一、无需 vendor
+   - 路由层 `router.resolve_model_id` 只做键解析；`Model.resolve_or_default` 负责官方模型名兜底到 `default_claude_model`（默认 `glm/glm-4-flash`）
+   - `models.alias` 在 `GET /v1/models` 中作为独立条目输出，`alias_for` 指向真实 `厂商/模型`
 4. **方舟双通道**：Coding Plan 套餐通道 `/api/coding/v1` 支持大部分模型；旗舰（Seed 2.1 Pro/Evolving）只能走 `/api/v3` 按量
 5. **供应商适配优先复用 `openai_provider`**，新供应商若协议兼容 OpenAI 无需新增 provider
+6. **计费一律 USD**：价格原始币种存 `models.price_currency`（CNY/USD），`middleware/billing.py` 的 `_to_usd()` 负责换算后扣费，严禁直接用 CNY 金额计费
+7. **重启网关前先确认 8000 端口无残留旧 uvicorn**：旧进程跑旧代码但数据库已被新迁移改列名（`models.id -> models.model`）时会报 `no such column: models.model`；`ss -ltnp | grep :8000` 查到后先 kill 再启动
+
+## 模型表结构（2026-08-15 重构后）
+
+- `ModelCatalog` 已改名 `Model`，主键列由 `id` 改名为 `model`，与 `vendor` 组成复合主键
+- `ModelAlias` 表已删除，别名收敛为 `models.alias` 单列（全局唯一）
+- ORM 文件：`src/db/models.py`；模型列表 API：`src/routers/models.py`
+- 迁移脚本 `scripts/migrate_db.py` 已支持 `models.id -> models.model` 改名、`models.alias` 加列、`model_aliases` 表删除；服务 lifespan 启动时自动执行
 
 ## 外部依赖（不在仓库内，改坏需知）
 

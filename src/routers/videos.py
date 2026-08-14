@@ -18,9 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models import User, ModelCatalog, VideoTask
+from src.db.models import User, Model, VideoTask
 from src.middleware.auth import get_api_key_user
 from src.middleware.billing import billing_service, calc_video_cost
+from src.services.model_key import format_model_key, parse_model_key
 
 router = APIRouter(tags=["Videos"])
 
@@ -61,7 +62,11 @@ async def create_video_task(
         return JSONResponse(status_code=e.status_code, content=e.detail)
 
     # 模型校验
-    model = await ModelCatalog.get_by_id_or_alias(db, request.model)
+    mid, vendor = parse_model_key(request.model)
+    if vendor:
+        model = await Model.get_by_model_and_vendor(db, mid, vendor)
+    else:
+        model = await Model.get_by_alias(db, mid)
     if not model or not model.is_active or model.model_type != "video":
         raise HTTPException(
             status_code=400,
@@ -73,7 +78,7 @@ async def create_video_task(
     task = VideoTask(
         id=task_id,
         user_id=user.id,
-        model=request.model,
+        model=format_model_key(model.model, model.vendor),
         prompt=request.prompt,
         status="pending",
         duration_seconds=request.duration,
