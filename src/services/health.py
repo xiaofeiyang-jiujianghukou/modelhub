@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import Provider, RouteChannel
-from src.providers import get_provider
+from src.providers import build_provider
 from src.config import settings
 
 
@@ -87,7 +87,7 @@ class HealthChecker:
 
         try:
             # 获取 provider 实例
-            provider_instance = get_provider(provider.name)
+            provider_instance = build_provider(provider)
             if not provider_instance:
                 return
 

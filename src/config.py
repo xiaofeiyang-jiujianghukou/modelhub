@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Anthropic 协议层默认模型（claude-* 请求映射到该模型）
     default_claude_model: str = "doubao-seed-2-0-pro"
 
+    # ── Codex 模型目录（模型变化时自动重写，Codex 启动时加载最新清单）────────
+    codex_catalog_path: Optional[str] = None   # 如 /home/xxx/.codex/model-catalog.local.json
+
     # ── 健康检查 ────────────────────────────────────────────────
     health_check_interval_seconds: int = 30
     circuit_breaker_threshold: float = 0.5   # 错误率阈值

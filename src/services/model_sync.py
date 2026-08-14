@@ -1,0 +1,356 @@
+"""
+模型同步服务：从上游供应商拉取模型列表并入库（幂等 upsert）
+
+- 4 种上游响应解析器：openai（标准/兼容）/ grok（OpenAI 超集带官方价）/ anthropic（游标分页）/ gemini（原生结构 + 兼容兜底）
+- model_source='static' 的供应商直接使用注册表内置清单
+- 拉取/入库失败不抛未捕获异常，写入 provider.last_sync_status/last_sync_error
+"""
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Optional
+
+import httpx
+from loguru import logger
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config import settings
+from src.models import ModelCatalog, Provider, RouteChannel
+from src.providers.provider_registry import (
+    ProviderSpec, _excluded, get_spec,
+)
+from src.services.crypto import decrypt_credentials
+
+
+@dataclass
+class SyncedModel:
+    """上游拉取到的模型（统一格式）"""
+    id: str
+    display_name: str = ""
+    owned_by: str = ""
+    model_type: str = "llm"
+    input_price: Optional[float] = None
+    output_price: Optional[float] = None
+    context_window: Optional[int] = None
+    price_source: str = "default"
+
+
+class SyncResult(BaseModel):
+    """同步结果（API 返回结构）"""
+    status: str = "success"          # success | error
+    added: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = []
+    model_ids: list[str] = []
+
+
+# ── 上游拉取 ──────────────────────────────────────────────────────────────────
+
+async def _http_get(url: str, headers: dict, timeout: float, params: Optional[dict] = None) -> dict:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code == 401 or resp.status_code == 403:
+            raise ValueError(f"API Key 无效或无权访问（HTTP {resp.status_code}）")
+        if resp.status_code != 200:
+            raise ValueError(f"上游请求失败 HTTP {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+
+async def _fetch_openai_style(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """标准 OpenAI 结构 + Moonshot 能力字段"""
+    data = await _http_get(
+        f"{base_url.rstrip('/')}/models",
+        {"Authorization": f"Bearer {api_key}"},
+        timeout,
+    )
+    models: list[SyncedModel] = []
+    for item in data.get("data", []):
+        mid = item.get("id", "")
+        if not mid or _excluded(mid, spec.exclude_patterns):
+            continue
+        models.append(SyncedModel(
+            id=mid,
+            display_name=item.get("display_name", "") or item.get("displayName", ""),
+            owned_by=item.get("owned_by", ""),
+            context_window=item.get("context_length") or item.get("context_window"),
+            price_source="default",
+        ))
+    return models
+
+
+async def _fetch_grok(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """xAI：OpenAI 超集，自带官方价格字段"""
+    data = await _http_get(
+        f"{base_url.rstrip('/')}/models",
+        {"Authorization": f"Bearer {api_key}"},
+        timeout,
+    )
+    models: list[SyncedModel] = []
+    for item in data.get("data", []):
+        mid = item.get("id", "")
+        if not mid or _excluded(mid, spec.exclude_patterns):
+            continue
+        # 官方价格字段（每 1M tokens），缺失时回退默认价并标 default
+        in_price = item.get("prompt_text_token_price")
+        out_price = item.get("completion_text_token_price")
+        price_source = "official" if in_price is not None else "default"
+        models.append(SyncedModel(
+            id=mid,
+            display_name=item.get("display_name", ""),
+            owned_by=item.get("owned_by", "xai"),
+            context_window=item.get("context_length"),
+            input_price=in_price,
+            output_price=out_price,
+            price_source=price_source,
+        ))
+    return models
+
+
+async def _fetch_anthropic(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """Anthropic：非 OpenAI 结构，after_id 游标分页"""
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    models: list[SyncedModel] = []
+    after_id: Optional[str] = None
+    while True:
+        url = f"{base_url.rstrip('/')}/v1/models"
+        params = {"limit": 100}
+        if after_id:
+            params["after_id"] = after_id
+        data = await _http_get(url, headers, timeout, params=params)
+        for item in data.get("data", []):
+            mid = item.get("id", "")
+            if not mid or _excluded(mid, spec.exclude_patterns):
+                continue
+            models.append(SyncedModel(
+                id=mid,
+                display_name=item.get("display_name", ""),
+                owned_by="anthropic",
+                context_window=item.get("max_input_tokens") or None,
+                price_source="default",
+            ))
+        if not data.get("has_more") or not data.get("last_id"):
+            break
+        after_id = data["last_id"]
+        if len(models) > 500:   # 安全上限
+            break
+    return models
+
+
+async def _fetch_gemini(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """Gemini 原生端点（models[].name 带 models/ 前缀）；4xx 降级 OpenAI 兼容端点"""
+    models: list[SyncedModel] = []
+    page_token: Optional[str] = None
+    try:
+        while True:
+            params = {"pageSize": 100}
+            if page_token:
+                params["pageToken"] = page_token
+            data = await _http_get(
+                f"{base_url.rstrip('/')}/v1beta/models",
+                {"Content-Type": "application/json"},
+                timeout,
+                params={**params, "key": api_key},
+            )
+            for item in data.get("models", []):
+                name = item.get("name", "")
+                mid = name.removeprefix("models/") if name else ""
+                if not mid or _excluded(mid, spec.exclude_patterns):
+                    continue
+                # 只收支持文本生成的模型
+                methods = item.get("supportedGenerationMethods", [])
+                if methods and "generateContent" not in methods:
+                    continue
+                models.append(SyncedModel(
+                    id=mid,
+                    display_name=item.get("displayName", ""),
+                    owned_by="google",
+                    context_window=item.get("inputTokenLimit") or None,
+                    price_source="default",
+                ))
+            if not data.get("nextPageToken"):
+                break
+            page_token = data["nextPageToken"]
+            if len(models) > 500:
+                break
+        return models
+    except ValueError as e:
+        # 原生端点 4xx → 尝试 OpenAI 兼容端点
+        if "HTTP 401" in str(e) or "HTTP 403" in str(e) or "HTTP 404" in str(e):
+            logger.warning(f"gemini native models endpoint failed ({e}), fallback to openai-compat")
+            data = await _http_get(
+                f"{base_url.rstrip('/')}/v1beta/openai/models",
+                {"Authorization": f"Bearer {api_key}"},
+                timeout,
+            )
+            for item in data.get("data", []):
+                mid = item.get("id", "")
+                if not mid or _excluded(mid, spec.exclude_patterns):
+                    continue
+                models.append(SyncedModel(
+                    id=mid,
+                    display_name=item.get("display_name", ""),
+                    owned_by="google",
+                    price_source="default",
+                ))
+            return models
+        raise
+
+
+async def fetch_models(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """按注册表配置分发到对应解析器"""
+    parser = spec.models_parser
+    if parser == "anthropic":
+        return await _fetch_anthropic(spec, base_url, api_key, timeout)
+    if parser == "gemini":
+        return await _fetch_gemini(spec, base_url, api_key, timeout)
+    if parser == "grok":
+        return await _fetch_grok(spec, base_url, api_key, timeout)
+    return await _fetch_openai_style(spec, base_url, api_key, timeout)
+
+
+# ── 入库同步 ──────────────────────────────────────────────────────────────────
+
+async def sync_provider_models(db: AsyncSession, provider: Provider, spec: ProviderSpec, prune: bool = False) -> SyncResult:
+    """拉取（或读取静态清单）并 upsert 模型 + 路由通道；更新同步状态。prune 暂不启用"""
+    result = SyncResult()
+    now = datetime.now(timezone.utc)
+    try:
+        # 1. 获取待同步模型（无 Key 的供应商一律失败——未配置不可用）
+        creds = decrypt_credentials(provider.credentials_enc)
+        api_key = creds.get("api_key", "")
+        if not api_key:
+            raise ValueError("未配置 API Key，请先填写订阅密钥")
+        if spec.model_source == "static":
+            synced = [
+                SyncedModel(
+                    id=m.id, display_name=m.display_name, owned_by=spec.key,
+                    input_price=m.input_price, output_price=m.output_price,
+                    context_window=m.context_window, price_source=m.price_source,
+                )
+                for m in spec.static_models
+            ]
+        else:
+            synced = await fetch_models(
+                spec, provider.base_url, api_key,
+                timeout=max(provider.timeout_ms / 1000.0, settings.upstream_timeout_seconds),
+            )
+            # api 拉取模型定价：官方核对价（known_prices）优先，否则回填注册表默认价
+            known = {mid: (ip, op) for mid, ip, op in spec.known_prices}
+            known_ctx = dict(spec.known_contexts)
+            for sm in synced:
+                if sm.input_price is None or sm.output_price is None:
+                    if sm.id in known:
+                        sm.input_price, sm.output_price = known[sm.id]
+                        sm.price_source = "official"
+                    else:
+                        sm.input_price = spec.default_prices.input_price
+                        sm.output_price = spec.default_prices.output_price
+                        sm.price_source = "default"
+                # 上下文：上游未返回时用官方核对值
+                if sm.context_window is None and sm.id in known_ctx:
+                    sm.context_window = known_ctx[sm.id]
+
+        # 2. 事务内 upsert
+        for sm in synced:
+            model = await db.get(ModelCatalog, sm.id)
+            if model:
+                if sm.display_name:
+                    model.display_name = sm.display_name
+                if sm.context_window is not None:
+                    model.context_window = sm.context_window
+                if sm.input_price is not None:
+                    model.input_price = sm.input_price
+                    model.price_source = sm.price_source
+                elif not model.price_source:
+                    model.price_source = sm.price_source
+                if sm.output_price is not None:
+                    model.output_price = sm.output_price
+                    model.price_source = sm.price_source
+                elif not model.price_source:
+                    model.price_source = sm.price_source
+                model.synced_from = spec.key
+                model.last_synced_at = now
+                result.updated += 1
+            else:
+                db.add(ModelCatalog(
+                    id=sm.id,
+                    display_name=sm.display_name or sm.id,
+                    owned_by=sm.owned_by or spec.key,
+                    model_type=sm.model_type,
+                    input_price=sm.input_price,
+                    output_price=sm.output_price,
+                    context_window=sm.context_window,
+                    price_source=sm.price_source,
+                    synced_from=spec.key,
+                    last_synced_at=now,
+                    route_strategy="weighted_random",
+                    is_active=True,
+                ))
+                result.added += 1
+
+            # 通道 upsert（model_id + provider_id 唯一）
+            channel = await db.scalar(
+                select(RouteChannel).where(
+                    RouteChannel.model_id == sm.id,
+                    RouteChannel.provider_id == provider.id,
+                )
+            )
+            if channel:
+                channel.upstream_model = sm.id
+                channel.is_active = True
+            else:
+                db.add(RouteChannel(
+                    model_id=sm.id,
+                    provider_id=provider.id,
+                    upstream_model=sm.id,
+                    weight=100,
+                    priority=100,
+                    is_active=True,
+                ))
+            result.model_ids.append(sm.id)
+
+        # 3. 更新 provider 同步状态
+        provider.last_synced_at = now
+        provider.last_sync_status = "success"
+        provider.last_sync_error = None
+        await db.commit()
+        result.status = "success"
+        logger.info(f"sync {spec.key}: +{result.added} ~{result.updated} models")
+        # 模型清单变化 → 自动刷新 Codex 模型目录（Codex 启动时读取最新）
+        from src.services.codex_catalog import maybe_sync_background
+        maybe_sync_background()
+    except Exception as e:
+        await db.rollback()
+        provider.last_sync_status = "error"
+        provider.last_sync_error = str(e)[:500]
+        await db.commit()
+        result.status = "error"
+        result.errors = [str(e)]
+        logger.error(f"sync {spec.key} failed: {e}")
+    return result
+
+
+async def run_sync_background(provider_id: str) -> SyncResult:
+    """后台同步：独立会话执行（避免与请求生命周期绑定）"""
+    from src.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        provider = await db.get(Provider, provider_id)
+        if not provider:
+            return SyncResult(status="error", errors=["Provider not found"])
+        spec = get_spec(provider.name)
+        if not spec:
+            return SyncResult(status="error", errors=[f"Unknown provider: {provider.name}"])
+        return await sync_provider_models(db, provider, spec)
+
+
+def spawn_sync_task(provider_id: str) -> None:
+    """在当前事件循环中启动后台同步任务（创建后未引用的任务由事件循环持有）"""
+    asyncio.create_task(run_sync_background(provider_id))

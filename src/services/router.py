@@ -21,36 +21,9 @@ from src.providers.mock_provider import MockProvider
 from src.config import settings
 
 
-def _decrypt_credentials(encrypted: str) -> dict:
-    """
-    解密供应商凭证（简化实现：生产需用 AES-256-GCM）
-    MVP 阶段，凭证以明文 JSON 字符串存储（开发环境）
-    """
-    import json
-    try:
-        return json.loads(encrypted)
-    except Exception:
-        return {}
-
-
-def _build_provider(provider: Provider) -> Optional[BaseProvider]:
-    """根据 Provider ORM 对象构建适配器实例"""
-    creds = _decrypt_credentials(provider.credentials_enc)
-    api_key = creds.get("api_key", "")
-    timeout = provider.timeout_ms / 1000.0
-    name_lower = provider.name.lower()
-
-    if name_lower == "mock":
-        return MockProvider(base_url=provider.base_url, api_key=api_key, timeout_seconds=timeout)
-    elif "openai" in name_lower or "azure" in name_lower:
-        return OpenAIProvider(base_url=provider.base_url, api_key=api_key, timeout_seconds=timeout)
-    elif "anthropic" in name_lower or "claude" in name_lower:
-        return AnthropicProvider(base_url=provider.base_url, api_key=api_key, timeout_seconds=timeout)
-    elif "gemini" in name_lower or "google" in name_lower:
-        return GeminiProvider(base_url=provider.base_url, api_key=api_key, timeout_seconds=timeout)
-    else:
-        # 默认尝试 OpenAI 兼容（DeepSeek / GLM / 其他）
-        return OpenAIProvider(base_url=provider.base_url, api_key=api_key, timeout_seconds=timeout)
+# 统一适配器工厂（按注册表 adapter + AES-GCM 解密凭证构建）
+# 兼容 legacy 明文凭证（crypto.decrypt_credentials 内部处理）
+from src.providers import build_provider  # noqa: E402
 
 
 def _ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -207,7 +180,7 @@ class RouterService:
                 await db.commit()
                 continue
 
-            adapter = _build_provider(provider_obj)
+            adapter = build_provider(provider_obj)
             if not adapter:
                 continue
 
@@ -281,7 +254,7 @@ class RouterService:
                 await db.commit()
                 continue
 
-            adapter = _build_provider(provider_obj)
+            adapter = build_provider(provider_obj)
             if not adapter:
                 continue
 

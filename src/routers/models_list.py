@@ -23,6 +23,8 @@ def _model_to_item(model: ModelCatalog) -> dict:
         "meta": {
             "type": model.model_type,
             "supports_streaming": model.supports_streaming,
+            "price_source": model.price_source or "default",
+            "synced_from": model.synced_from,
         },
     }
 
@@ -53,14 +55,36 @@ async def list_models(db: AsyncSession = Depends(get_db)):
     获取所有可用模型列表
 
     兼容 OpenAI API 格式，额外添加 meta 字段包含定价信息
+    可见性规则：模型至少有一条通道，其供应商满足 活跃 + 已配置 Key + 同步成功
     """
+    # 可用供应商：活跃 + 已配置 Key（解密判断）+ 同步成功
+    from src.models import Provider, RouteChannel as _RC
+    from src.services.crypto import decrypt_credentials as _decrypt
+    providers = (await db.execute(select(Provider))).scalars().all()
+    usable_provider_ids = {
+        p.id for p in providers
+        if p.is_active
+        and p.last_sync_status == "success"
+        and bool(_decrypt(p.credentials_enc).get("api_key"))
+    }
+
+    # 有可用通道的模型
+    visible_model_ids = set(
+        (await db.execute(
+            select(_RC.model_id).where(
+                _RC.provider_id.in_(usable_provider_ids),
+                _RC.is_active == True,  # noqa: E712
+            ).distinct()
+        )).scalars().all()
+    )
+
     # 查询所有活跃模型
     result = await db.execute(
         select(ModelCatalog)
         .where(ModelCatalog.is_active == True)
         .order_by(ModelCatalog.model_type, ModelCatalog.id)
     )
-    models = result.scalars().all()
+    models = [m for m in result.scalars().all() if m.id in visible_model_ids]
 
     # 查询所有别名
     alias_result = await db.execute(select(ModelAlias))

@@ -47,25 +47,25 @@
     <div class="tab" onclick="switchTab('register')">注册</div>
   </div>
 
-  <div class="form active" id="login-form">
+  <form class="form active" id="login-form" onsubmit="doLogin(event); return false;">
     <label>邮箱</label>
-    <input type="email" id="login-email" placeholder="you@example.com">
+    <input type="email" id="login-email" placeholder="you@example.com" required>
     <label>密码</label>
-    <input type="password" id="login-password" placeholder="••••••••">
-    <button onclick="doLogin()">登 录</button>
+    <input type="password" id="login-password" placeholder="••••••••" required>
+    <button type="submit">登 录</button>
     <div class="error" id="login-error"></div>
-  </div>
+  </form>
 
-  <div class="form" id="register-form">
+  <form class="form" id="register-form" onsubmit="doRegister(event); return false;">
     <label>邮箱</label>
-    <input type="email" id="reg-email" placeholder="you@example.com">
+    <input type="email" id="reg-email" placeholder="you@example.com" required>
     <label>密码（至少8位）</label>
-    <input type="password" id="reg-password" placeholder="••••••••">
+    <input type="password" id="reg-password" placeholder="••••••••" required>
     <label>显示名</label>
     <input type="text" id="reg-name" placeholder="你的名字">
-    <button onclick="doRegister()">注 册</button>
+    <button type="submit">注 册</button>
     <div class="error" id="reg-error"></div>
-  </div>
+  </form>
 </div>
 
 <script>
@@ -88,6 +88,13 @@ async function api(path, method, body, token) {
   return resp.json();
 }
 
+// 登录成功后的回跳目标（dashboard 401 时携带 next 参数）
+function nextTarget() {
+  const next = new URLSearchParams(location.search).get('next');
+  if (next && next.startsWith('/dashboard')) return next;
+  return '/dashboard';
+}
+
 async function doLogin() {
   const email = document.getElementById('login-email').value;
   const password = document.getElementById('login-password').value;
@@ -96,7 +103,7 @@ async function doLogin() {
   const data = await api('/auth/login', 'POST', { email, password });
   if (data.access_token) {
     localStorage.setItem('gateway_token', data.access_token);
-    location.href = '/dashboard';
+    location.href = nextTarget();
   } else {
     errEl.textContent = (data.error && data.error.message) || '登录失败';
   }

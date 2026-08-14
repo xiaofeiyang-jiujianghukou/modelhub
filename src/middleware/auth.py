@@ -17,7 +17,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -217,10 +217,13 @@ class AuthService:
         if len(password) < 8:
             raise HTTPException(status_code=400, detail={"error": {"message": "Password must be at least 8 characters", "type": "invalid_request_error", "code": "weak_password"}})
 
+        # 首个注册用户自动成为管理员（自用网关免配置）
+        user_count = await db.scalar(select(func.count()).select_from(User))
         user = User(
             email=email,
             password_hash=_hash_password(password),
             display_name=display_name or email.split("@")[0],
+            is_admin=(user_count == 0),
         )
         db.add(user)
         # 同时初始化余额记录
@@ -360,6 +363,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     )
                 request.state.user = jwt_user
                 request.state.user_id = jwt_user.id
+                # JWT 登录态等价于该用户活跃 Key 发起请求（chat 等路由按 Key 归属计费/记日志）
+                from src.models import ApiKey as _ApiKey
+                from sqlalchemy import select as _select
+                _jwt_key_result = await db.execute(
+                    _select(_ApiKey).where(
+                        _ApiKey.user_id == jwt_user.id, _ApiKey.is_active == True
+                    ).limit(1)
+                )
+                _jwt_key = _jwt_key_result.scalar_one_or_none()
+                if _jwt_key:
+                    request.state.api_key = _jwt_key
+                    request.state.api_key_id = _jwt_key.id
             return await call_next(request)
 
         # 查询数据库验证 API Key

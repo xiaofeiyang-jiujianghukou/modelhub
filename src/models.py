@@ -165,6 +165,9 @@ class ModelCatalog(Base):
     output_price: Optional[float] = Column(Numeric(10, 6), nullable=True)  # 每 1M tokens
     unit_price: Optional[float] = Column(Numeric(10, 6), nullable=True)    # 每张/每秒
     context_window: Optional[int] = Column(Integer, nullable=True)
+    price_source: str = Column(String(10), default="default", nullable=False)  # official | default | manual
+    last_synced_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
+    synced_from: Optional[str] = Column(String(100), nullable=True)        # 同步来源 provider.name
     supports_streaming: bool = Column(Boolean, default=True, nullable=False)
     route_strategy: str = Column(String(30), default="weighted_random", nullable=False)  # M-5
     is_active: bool = Column(Boolean, default=True, nullable=False)
@@ -240,6 +243,9 @@ class Provider(Base):
     credentials_enc: str = Column(Text, nullable=False)    # AES-256-GCM 加密 JSON
     timeout_ms: int = Column(Integer, default=30000, nullable=False)
     is_active: bool = Column(Boolean, default=True, nullable=False)
+    last_synced_at: Optional[datetime] = Column(DateTime(timezone=True), nullable=True)
+    last_sync_status: Optional[str] = Column(String(20), nullable=True)     # success | error | pending
+    last_sync_error: Optional[str] = Column(Text, nullable=True)
     created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)
 
     route_channels = relationship("RouteChannel", back_populates="provider")

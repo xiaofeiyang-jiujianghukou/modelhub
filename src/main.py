@@ -18,7 +18,7 @@ from src.middleware.rate_limit import RateLimitMiddleware
 from src.services.health import init_health_checker, start_health_checks, stop_health_checks
 
 # 导入路由
-from src.routers import models_list, chat, images, dashboard, auth, web, videos, anthropic, responses
+from src.routers import models_list, chat, images, dashboard, auth, web, videos, anthropic, responses, providers
 
 
 # ── 应用生命周期 ───────────────────────────────────────────────────────────────
@@ -29,6 +29,11 @@ async def lifespan(app: FastAPI):
     # 启动时执行
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     await init_db()
+    # 结构迁移（guarded ALTER，幂等）
+    from scripts.migrate_db import run_db_migrations
+    applied = await run_db_migrations()
+    if applied:
+        logger.info(f"DB migration applied: {', '.join(applied)}")
 
     # 启动健康检查后台任务
     init_health_checker(
@@ -111,6 +116,7 @@ app.include_router(auth.router, prefix="/v1")
 app.include_router(videos.router, prefix="/v1")
 app.include_router(anthropic.router, prefix="/v1")
 app.include_router(responses.router, prefix="/v1")
+app.include_router(providers.router, prefix="/v1")
 app.include_router(web.router)
 
 

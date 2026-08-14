@@ -52,3 +52,12 @@ async def get_balance(
         currency="USD",
         updated_at=int(balance.updated_at.timestamp()),
     )
+
+
+@router.get("/dashboard/me")
+async def get_me(current_user: dict = Depends(get_current_user_jwt)):
+    """当前登录用户信息（前端权限门控：供应商管理 tab）"""
+    return {
+        "email": current_user.get("email", ""),
+        "is_admin": bool(current_user.get("is_admin", False)),
+    }

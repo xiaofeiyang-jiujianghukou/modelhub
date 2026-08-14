@@ -48,6 +48,15 @@
   h3 { margin-bottom: 16px; font-size: 16px; }
   .flex-row { display: flex; gap: 12px; align-items: center; }
   input[type="text"] { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; flex: 1; }
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-overlay.hidden { display: none; }  /* 覆盖 .modal-overlay 的 display:flex（优先级更高） */
+  .modal {
+    background: white; border-radius: 12px; padding: 24px; width: 420px; max-width: 92vw;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+  }
 </style>
 </head>
 <body>
@@ -59,6 +68,7 @@
   <div class="nav-item" data-tab="models" onclick="switchNav('models')">🤖 模型</div>
   <div class="nav-item" data-tab="logs" onclick="switchNav('logs')">📜 日志</div>
   <div class="nav-item" data-tab="test" onclick="switchNav('test')">🧪 测试对话</div>
+  <div class="nav-item hidden" id="nav-providers" data-tab="providers" onclick="switchNav('providers')">🔌 供应商</div>
   <div style="margin-top: 40px;">
     <button class="btn btn-danger" onclick="logout()" style="width:100%">退出登录</button>
   </div>
@@ -104,7 +114,7 @@
     <div class="card">
       <h3>可用模型</h3>
       <table>
-        <thead><tr><th>模型 ID</th><th>类型</th><th>输入价(/1M)</th><th>输出价(/1M)</th><th>上下文</th></tr></thead>
+        <thead><tr><th>模型 ID</th><th>类型</th><th>输入价(/1M)</th><th>输出价(/1M)</th><th>上下文</th><th>价格来源</th></tr></thead>
         <tbody id="models-table"></tbody>
       </table>
     </div>
@@ -126,10 +136,7 @@
     <div class="card">
       <h3>测试对话</h3>
       <div class="flex-row">
-        <select id="test-model" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px">
-          <option value="deepseek-chat">deepseek-chat</option>
-          <option value="glm-4-flash">glm-4-flash</option>
-        </select>
+        <select id="test-model" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px"></select>
         <select id="test-key" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px"></select>
       </div>
       <textarea id="test-prompt" rows="3" style="width:100%;margin-top:12px;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:14px" placeholder="输入消息...">用一句话介绍你自己</textarea>
@@ -137,21 +144,79 @@
       <div class="key-display" id="test-result" style="margin-top:16px;color:#ddd">等待测试...</div>
     </div>
   </div>
+
+  <!-- Providers -->
+  <div id="tab-providers" class="hidden">
+    <div class="card">
+      <div class="flex-row" style="justify-content:space-between">
+        <h3 style="margin-bottom:0">供应商管理</h3>
+        <button class="btn btn-primary" onclick="openProviderModal()">➕ 添加供应商</button>
+      </div>
+      <p style="font-size:12px;color:#888;margin-top:8px">添加/修改 API Key 后自动拉取该供应商的模型；删除供应商会级联清理其独占模型。Key 加密存储，仅显示状态。</p>
+      <table style="margin-top:12px">
+        <thead><tr><th>名称</th><th>Base URL</th><th>Key</th><th>模型数</th><th>上次同步</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="providers-table"></tbody>
+      </table>
+    </div>
+    <div class="card" id="sync-result-card" style="display:none">
+      <h3>同步结果</h3>
+      <div id="sync-result" style="font-size:13px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 供应商编辑弹窗 -->
+<div id="provider-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <h3 id="pm-title">添加供应商</h3>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>供应商类型</label>
+      <select id="pm-name" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-top:4px"></select>
+    </div>
+    <div style="font-size:13px;color:#555;margin-bottom:12px">
+      <label>API Key（订阅密钥；编辑时留空 = 不修改）</label>
+      <input type="password" id="pm-api-key" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="sk-... / API Key">
+    </div>
+    <details style="margin-bottom:12px">
+      <summary style="font-size:13px;color:#888;cursor:pointer">高级选项（Base URL / 超时）</summary>
+      <div style="margin-top:8px">
+        <div style="font-size:13px;color:#555;margin-bottom:12px">
+          <label>Base URL（默认用官方地址，仅官方更换时修改）</label>
+          <input type="text" id="pm-base-url" style="width:100%;box-sizing:border-box;margin-top:4px" placeholder="https://...">
+        </div>
+        <div style="font-size:13px;color:#555">
+          <label>超时（毫秒）</label>
+          <input type="number" id="pm-timeout" value="60000" style="width:100%;box-sizing:border-box;margin-top:4px">
+        </div>
+      </div>
+    </details>
+    <div class="flex-row" style="justify-content:flex-end">
+      <button class="btn" onclick="closeProviderModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveProvider()">保存</button>
+    </div>
+    <div id="pm-error" style="color:#e53e3e;font-size:12px;margin-top:8px"></div>
+  </div>
 </div>
 
 <script>
 const TOKEN = localStorage.getItem('gateway_token');
-if (!TOKEN) location.href = '/login';
+if (!TOKEN) location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash);
 
 async function api(path, method = 'GET', body, authType = 'jwt') {
   const headers = { 'Content-Type': 'application/json' };
   if (authType === 'jwt') headers['Authorization'] = 'Bearer ' + TOKEN;
   const resp = await fetch('/v1' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  if (resp.status === 401 && authType === 'jwt') { localStorage.removeItem('gateway_token'); location.href = '/login'; }
+  if (resp.status === 401 && authType === 'jwt') {
+    // 登录态失效：记住当前位置，登录后回跳
+    localStorage.removeItem('gateway_token');
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash);
+  }
   return resp.json();
 }
 
 function switchNav(tab) {
+  // 同步 URL hash（不压历史栈，刷新/分享后保持所在页）
+  if (location.hash !== '#' + tab) history.replaceState(null, '', '#' + tab);
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.tab === tab));
   document.querySelectorAll('[id^="tab-"]').forEach(t => t.classList.add('hidden'));
   document.getElementById('tab-' + tab).classList.remove('hidden');
@@ -159,8 +224,23 @@ function switchNav(tab) {
   if (tab === 'keys') loadKeys();
   if (tab === 'models') loadModels();
   if (tab === 'logs') loadLogs();
-  if (tab === 'test') loadTestKeys();
+  if (tab === 'test') loadTestData();
+  if (tab === 'providers') loadProviders();
 }
+
+// 初始化管理员状态：供应商 tab 仅 admin 可见
+async function initAdmin() {
+  try {
+    const me = await api('/dashboard/me');
+    if (me.is_admin) document.getElementById('nav-providers').classList.remove('hidden');
+  } catch (e) { /* 非登录态由 api() 统一跳转 */ }
+}
+
+// 支持浏览器前进/后退与手动改 hash
+window.addEventListener('hashchange', () => {
+  const tab = (location.hash || '#overview').slice(1);
+  if (document.getElementById('tab-' + tab)) switchNav(tab);
+});
 
 async function loadOverview() {
   const [bal, keys, logs] = await Promise.all([
@@ -215,6 +295,7 @@ async function loadModels() {
       <td>$${m.meta && m.meta.input_price_per_1m_tokens || '-'}</td>
       <td>$${m.meta && m.meta.output_price_per_1m_tokens || '-'}</td>
       <td>${m.meta && m.meta.context_window || '-'}</td>
+      <td>${priceBadge(m.meta && m.meta.price_source)}</td>
     </tr>`).join('');
 }
 
@@ -234,21 +315,192 @@ async function loadLogs() {
     </tr>`).join('');
 }
 
-async function loadTestKeys() {
-  const data = await api('/dashboard/keys');
-  const select = document.getElementById('test-key');
-  select.innerHTML = (data.data || []).map(k => `<option value="${k.key_prefix}">${k.name} (${k.key_prefix}...)</option>`).join('');
+// ── 供应商管理 ───────────────────────────────────────────────────────────────
+
+let PM_EDIT_ID = null;          // 编辑中的 provider id（null = 新建）
+let PM_REGISTRY = [];
+
+function priceBadge(source) {
+  if (source === 'official') return '<span class="badge success">官方</span>';
+  if (source === 'manual') return '<span class="badge pending">手动</span>';
+  return '<span class="badge">默认</span>';
+}
+
+function syncStatusBadge(status) {
+  if (status === 'success') return '<span class="badge success">成功</span>';
+  if (status === 'error') return '<span class="badge error">失败</span>';
+  if (status === 'pending') return '<span class="badge pending">同步中</span>';
+  return '<span class="badge">-</span>';
+}
+
+async function loadProviders() {
+  const data = await api('/admin/providers');
+  const tbody = document.getElementById('providers-table');
+  tbody.innerHTML = (data.data || []).map(p => `
+    <tr>
+      <td><strong>${p.name}</strong></td>
+      <td><code style="font-size:11px">${p.base_url}</code></td>
+      <td><span class="badge ${p.has_key ? 'success' : 'error'}">${p.has_key ? '已配置' : '无 Key'}</span></td>
+      <td>${p.model_count}</td>
+      <td style="font-size:12px">${p.last_synced_at ? new Date(p.last_synced_at * 1000).toLocaleString() : '从未'}</td>
+      <td>${syncStatusBadge(p.last_sync_status)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" onclick="openProviderModal('${p.id}')">编辑</button>
+        <button class="btn btn-sm" onclick="syncProvider('${p.id}')">同步</button>
+        <button class="btn btn-sm" onclick="testProvider('${p.id}')">测试</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteProvider('${p.id}', '${p.name}', ${p.model_count})">删除</button>
+      </td>
+    </tr>`).join('');
+  if (!(data.data || []).length) tbody.innerHTML = '<tr><td colspan="7" style="color:#888">暂无供应商，点击"添加供应商"开始配置</td></tr>';
+}
+
+async function openProviderModal(id) {
+  PM_EDIT_ID = id || null;
+  document.getElementById('pm-error').textContent = '';
+  document.getElementById('pm-api-key').value = '';
+  document.getElementById('pm-timeout').value = 60000;
+
+  const nameSelect = document.getElementById('pm-name');
+  if (PM_EDIT_ID) {
+    const data = await api('/admin/providers');
+    const p = (data.data || []).find(x => x.id === id);
+    if (!p) return;
+    document.getElementById('pm-title').textContent = '编辑供应商 ' + p.name;
+    nameSelect.innerHTML = `<option value="${p.name}">${p.name}</option>`;
+    document.getElementById('pm-base-url').value = p.base_url;
+    document.getElementById('pm-timeout').value = p.timeout_ms;
+  } else {
+    document.getElementById('pm-title').textContent = '添加供应商';
+    if (!PM_REGISTRY.length) {
+      const reg = await api('/admin/providers/registry');
+      PM_REGISTRY = reg.data || [];
+    }
+    nameSelect.innerHTML = PM_REGISTRY.map(r =>
+      `<option value="${r.key}" data-url="${r.default_base_url}">${r.display_name}${r.model_source === 'static' ? '（内置模型清单）' : ''}</option>`).join('');
+    // 切换供应商类型时同步默认 Base URL（官方地址，仅官方更换时才改）
+    nameSelect.onchange = syncBaseUrlFromSelect;
+    syncBaseUrlFromSelect();
+  }
+  document.getElementById('provider-modal').classList.remove('hidden');
+}
+
+function syncBaseUrlFromSelect() {
+  const opt = document.getElementById('pm-name').selectedOptions[0];
+  if (opt && opt.dataset.url) {
+    document.getElementById('pm-base-url').value = opt.dataset.url;
+  }
+}
+
+function closeProviderModal() {
+  document.getElementById('provider-modal').classList.add('hidden');
+}
+
+async function saveProvider() {
+  const name = document.getElementById('pm-name').value;
+  const baseUrl = document.getElementById('pm-base-url').value.trim();
+  const apiKey = document.getElementById('pm-api-key').value.trim();
+  const timeoutMs = parseInt(document.getElementById('pm-timeout').value) || 30000;
+  const errEl = document.getElementById('pm-error');
+  errEl.textContent = '';
+
+  const body = { timeout_ms: timeoutMs };
+  if (baseUrl) body.base_url = baseUrl;
+  if (apiKey) body.credentials = { api_key: apiKey };
+
+  try {
+    if (PM_EDIT_ID) {
+      await api('/admin/providers/' + PM_EDIT_ID, 'PUT', body);
+    } else {
+      if (!apiKey) { errEl.textContent = '⚠️ 新供应商必须填写 API Key'; return; }
+      await api('/admin/providers', 'POST', { ...body, name, auto_sync: true });
+    }
+    closeProviderModal();
+    loadProviders();
+  } catch (e) {
+    errEl.textContent = '❌ ' + (e.error?.message || JSON.stringify(e));
+  }
+}
+
+async function deleteProvider(id, name, count) {
+  if (!confirm(`删除供应商「${name}」将同时删除其 ${count} 个独占模型与路由通道，确认？`)) return;
+  const r = await api('/admin/providers/' + id, 'DELETE');
+  alert(r.message || '已删除');
+  loadProviders();
+}
+
+async function syncProvider(id) {
+  const resultEl = document.getElementById('sync-result');
+  document.getElementById('sync-result-card').style.display = 'block';
+  resultEl.textContent = '同步中...';
+  try {
+    const r = await api('/admin/providers/' + id + '/sync', 'POST');
+    if (r.status === 'error') {
+      resultEl.innerHTML = `<span style="color:#e53e3e">❌ 同步失败：${(r.errors || []).join('; ')}</span>`;
+    } else {
+      resultEl.innerHTML = `✅ 新增 <b>${r.added}</b> 个模型，更新 <b>${r.updated}</b> 个，跳过 <b>${r.skipped}</b> 个`;
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span style="color:#e53e3e">❌ ${e.error?.message || '同步失败'}</span>`;
+  }
+  loadProviders();
+}
+
+async function testProvider(id) {
+  const resultEl = document.getElementById('sync-result');
+  document.getElementById('sync-result-card').style.display = 'block';
+  resultEl.textContent = '测试中...';
+  try {
+    const r = await api('/admin/providers/' + id + '/test', 'POST');
+    resultEl.innerHTML = r.ok
+      ? `<span style="color:#38a169">✅ ${r.message}</span>`
+      : `<span style="color:#e53e3e">❌ ${r.message}</span>`;
+  } catch (e) {
+    resultEl.innerHTML = `<span style="color:#e53e3e">❌ ${e.error?.message || '测试失败'}</span>`;
+  }
+}
+
+async function loadTestData() {
+  const [keys, models] = await Promise.all([
+    api('/dashboard/keys'),
+    api('/models').catch(() => ({ data: [] })),
+  ]);
+  // 模型：全部可支持模型
+  const modelSelect = document.getElementById('test-model');
+  modelSelect.innerHTML = (models.data || []).map(m => `<option value="${m.id}">${m.id}</option>`).join('');
+  // Key：全部活跃 Key（展示用途；请求走当前登录态 JWT，无需明文）
+  const keySelect = document.getElementById('test-key');
+  const activeKeys = (keys.data || []).filter(k => k.is_active);
+  keySelect.innerHTML = activeKeys.length
+    ? activeKeys.map(k => `<option value="${k.id}">${k.name} (${k.key_prefix}...)</option>`).join('')
+    : '<option value="">（无活跃 Key，请先创建）</option>';
 }
 
 async function testChat() {
   const model = document.getElementById('test-model').value;
   const prompt = document.getElementById('test-prompt').value;
   const resultEl = document.getElementById('test-result');
+  if (!model) { resultEl.textContent = '⚠️ 没有可用模型（请检查网关模型种子）'; return; }
+  if (!prompt.trim()) { resultEl.textContent = '⚠️ 请输入消息内容'; return; }
   resultEl.textContent = '调用中...';
 
-  // 需要明文 key：从创建记录里取（简化：提示用 key_prefix 找到明文）
-  const keys = await api('/dashboard/keys');
-  resultEl.textContent = '提示：请使用创建 API Key 时保存的明文（Key 仅创建时显示一次）。';
+  try {
+    // 用登录态 JWT 调用（网关支持 JWT 认证），无需明文 Key
+    const resp = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500 }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      resultEl.textContent = '❌ ' + (data.error.message || JSON.stringify(data.error));
+      return;
+    }
+    const text = data.choices?.[0]?.message?.content || '(无内容返回)';
+    const usage = data.usage ? `\n\n[${data.model} · ${data.usage.total_tokens} tokens]` : '';
+    resultEl.textContent = text + usage;
+  } catch (e) {
+    resultEl.textContent = '❌ 请求失败: ' + e.message;
+  }
 }
 
 async function logout() {
@@ -256,7 +508,11 @@ async function logout() {
   location.href = '/login';
 }
 
-loadOverview();
+// 初始加载：按 URL hash 定位 tab（默认概览），刷新/分享链接后保持所在页
+const initialTab = (location.hash || '#overview').slice(1);
+switchNav(document.getElementById('tab-' + initialTab) ? initialTab : 'overview');
+// 管理员状态（供应商 tab 门控）
+initAdmin();
 </script>
 </body>
 </html>
