@@ -93,12 +93,14 @@ async def list_models(http_req: Request, db: AsyncSession = Depends(get_db)):
     alias_map = {a.model_id: a.alias for a in aliases}
 
     # Claude Code 场景（带 anthropic-version 头）→ Anthropic 协议格式
+    # CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY 只列出 claude-/anthropic- 开头的 ID，
+    # 因此包装为 claude-<网关模型ID>，请求时由 anthropic 路由剥壳映射回真实模型
     if http_req.headers.get("anthropic-version"):
         return {
             "data": [
                 {
                     "type": "model",
-                    "id": m.id,
+                    "id": f"claude-{m.id}",
                     "display_name": m.display_name or m.id,
                     "created_at": m.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }

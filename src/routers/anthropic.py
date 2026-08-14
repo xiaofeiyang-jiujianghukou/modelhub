@@ -54,21 +54,29 @@ class AnthropicRequest(BaseModel):
 
 # ── 模型映射 ────────────────────────────────────────────────────────────────
 
+# Claude 官方内置模型名前缀（映射到默认模型，不是网关模型包装）
+_CLAUDE_BUILTIN_PREFIXES = (
+    "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable",
+    "opus[", "sonnet[", "haiku[",
+)
+
+
 def _resolve_model(model_name: str) -> str:
     """
     模型名解析：
-    1. 网关中已注册的模型 ID → 直接使用
-    2. claude-* 前缀 / Claude Code 内置别名（opus/sonnet/haiku 等）→ 映射到网关默认模型
+    1. 网关模型 ID → 直接使用
+    2. claude-<网关模型ID> 包装（/model 选择器发来的）→ 剥壳映射到真实模型
+    3. Claude 官方内置名（claude-opus-4-x / opus[1m] 等）→ 默认模型
     """
-    default = getattr(settings, "default_claude_model", None) or "doubao-seed-2-0-pro"
+    default = getattr(settings, "default_claude_model", None) or "deepseek-v4-flash"
     lower = model_name.lower()
-    if (
-        model_name.startswith("claude-")
-        or lower in ("opus", "sonnet", "haiku")
-        or lower.startswith(("opus[", "sonnet[", "haiku["))
-    ):
-        logger.info("claude model {} mapped to {}", model_name, default)
+    if lower in ("opus", "sonnet", "haiku") or lower.startswith(_CLAUDE_BUILTIN_PREFIXES):
+        logger.info("claude builtin model {} mapped to {}", model_name, default)
         return default
+    if model_name.startswith("claude-"):
+        stripped = model_name[len("claude-"):]
+        logger.info("claude-wrapped model {} resolved to {}", model_name, stripped)
+        return stripped
     return model_name
 
 
