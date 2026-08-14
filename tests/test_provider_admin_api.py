@@ -60,10 +60,10 @@ class TestRegistry:
         assert resp.status_code == 200
         data = resp.json()["data"]
         keys = {d["key"] for d in data}
-        # 11 家 + mock
-        assert len(data) == 12
+        # 11 家
+        assert len(data) == 11
         for k in ["deepseek", "ark-plan", "hunyuan", "bailian", "moonshot", "glm",
-                  "minimax", "openai", "anthropic", "grok", "gemini", "mock"]:
+                  "minimax", "openai", "anthropic", "grok", "gemini"]:
             assert k in keys
 
     async def test_unknown_provider_rejected(self, client):

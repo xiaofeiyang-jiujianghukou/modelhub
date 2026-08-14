@@ -185,13 +185,6 @@ _PROVIDER_SPECS = [
         models_parser="gemini",
         exclude_patterns=("embedding", "veo", "imagen", "music"),
     ),
-    # ── Mock（测试/演示）───────────────────────────────────────────────────────
-    ProviderSpec(
-        key="mock", display_name="Mock（测试）",
-        default_base_url="https://mock.internal",
-        adapter="mock",
-        model_source="static",
-    ),
 ]
 
 PROVIDER_REGISTRY: dict[str, ProviderSpec] = {spec.key: spec for spec in _PROVIDER_SPECS}
