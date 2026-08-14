@@ -13,27 +13,38 @@
 
 ```bash
 uvicorn src.main:app --host 0.0.0.0 --port 8000   # 启动（项目根目录；DEBUG=true 时 /docs 有 Swagger）
-python scripts/init_db.py                         # 初始化数据库 + 种子模型（幂等；--reset 重建）
+python scripts/init_db.py                         # 初始化表结构 + 缺省种子（ensure-exists，不覆盖界面配置；--reset 重建）
+python scripts/migrate_providers.py               # .env 供应商 Key → DB（--overwrite 强制；--reencrypt 重加密）
+python scripts/generate_encryption_key.py         # 生成凭证加密密钥（占位值自愈）
+python scripts/migrate_db.py                      # 结构迁移（guarded ALTER，幂等；服务启动自动执行）
 pytest tests/ -q                                  # 跑测试
 ```
 
 - 服务日志在 `/tmp/gateway.log`
-- 供应商 API Key 在项目 `.env`（已 gitignore，不入库），改 Key 无需动数据库
+- 供应商 API Key 存数据库 `providers.credentials_enc`（AES-256-GCM 加密，`gcm:v1:` 前缀），**界面统一管理**；.env 只保留非敏感配置
+- 凭证加密密钥 `CREDENTIALS_ENCRYPTION_KEY` 在 `.env`（占位值会导致加密写库失败 fail-fast）
 
 ## 架构
 
 ```
 src/
-├── main.py             # 应用入口，挂载全部 router
-├── config.py           # 环境配置（DEBUG 等）
-├── middleware/         # auth（API Key SHA-256 校验）/ billing（Token 级计费、原子扣费）/ rate_limit（令牌桶）
-├── providers/          # 供应商适配器：openai_provider（方舟/DeepSeek/GLM 等 OpenAI 兼容通道复用）
-│                       #   + anthropic_provider（协议转换）+ gemini/mock
+├── main.py             # 应用入口，挂载全部 router（lifespan 自动跑结构迁移）
+├── config.py           # 环境配置（DEBUG、凭证加密密钥等）
+├── middleware/         # auth（API Key SHA-256 / JWT 双认证，首用户自动 admin）/ billing / rate_limit
+├── providers/          # provider_registry.py（11 家供应商注册表，单一数据源）+ 适配器（openai/anthropic/gemini/mock）
 ├── routers/            # chat / responses / anthropic / models_list / images / videos / auth / dashboard / web
-└── services/           # router.py（智能路由：多通道故障转移 + 熔断器 + 健康检查）
-web/                    # Web 控制台（注册登录、Key 管理、余额/日志/模型面板）
-scripts/init_db.py      # 建表 + 种子 15 个模型（分组：方舟 Coding Plan / 方舟旗舰 / DeepSeek / GLM）
+│                       #   + providers.py（供应商管理：CRUD/同步/级联删除，admin 权限）
+└── services/           # router.py（智能路由）/ model_sync.py（拉取模型 4 种解析器 + upsert）/ crypto.py（AES-256-GCM 凭证）
+web/                    # Web 控制台（注册登录、Key 管理、供应商管理、测试对话、余额/日志/模型面板）
+scripts/                # init_db.py（种子）/ migrate_db.py（加列）/ migrate_providers.py（.env Key 迁移）/ generate_encryption_key.py
 ```
+
+## 供应商管理（界面）
+
+- 11 家注册表：DeepSeek/方舟 Coding Plan/混元/百炼/Kimi/智谱/MiniMax/OpenAI/Claude/Grok/Gemini（`src/providers/provider_registry.py`）
+- `model_source='api'` 的添加 Key 后自动 GET /models 拉取（DeepSeek/Kimi/MiniMax/OpenAI/Claude/Grok/Gemini）；`'static'` 用内置清单（方舟/混元/百炼/智谱）
+- 删除供应商级联清理其独占模型与通道；共有模型保留
+- 价格来源标注：`price_source` = official（官方定价/官方文档价）| default（网关默认 2/8）| manual
 
 ## 关键规则
 

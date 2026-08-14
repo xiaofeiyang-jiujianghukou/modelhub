@@ -51,6 +51,16 @@ def _patch_global_db(test_engine, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _real_encryption_key(monkeypatch):
+    """全局：使用真实随机加密密钥，隔离 .env 占位值（凭证加密相关代码必需）"""
+    import base64
+    import os
+    from src.config import settings
+    monkeypatch.setattr(settings, "credentials_encryption_key", base64.b64encode(os.urandom(32)).decode())
+    yield
+
+
 @pytest_asyncio.fixture
 async def db_session(db_session_factory) -> AsyncGenerator[AsyncSession, None]:
     """数据库会话"""

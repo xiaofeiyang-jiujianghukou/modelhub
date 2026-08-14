@@ -20,3 +20,6 @@ nohup.out
 .DS_Store
 .env
 .claude/
+
+# 数据库备份（含运行数据，仅本地保留）
+gateway.db.bak-*
