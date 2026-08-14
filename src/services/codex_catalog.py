@@ -57,9 +57,29 @@ _TEMPLATE = {
 }
 
 
-def _describe(display_name: str, slug: str) -> str:
-    """模型描述统一格式：[厂商][模型]"""
-    return f"[{display_name}][{slug}]"
+# 厂商名（synced_from 供应商 key → 显示名）
+VENDOR_LABELS = {
+    "ark-plan": "方舟",
+    "deepseek": "DeepSeek",
+    "glm": "智谱",
+    "bailian": "百炼",
+    "hunyuan": "混元",
+    "moonshot": "Kimi",
+    "minimax": "MiniMax",
+    "openai": "OpenAI",
+    "anthropic": "Claude",
+    "grok": "Grok",
+    "gemini": "Gemini",
+}
+
+
+def _describe(slug: str, synced_from: str | None) -> str:
+    """模型描述统一格式：[厂商][模型名]（模型名取网关 ID 去厂商前缀，如 ark-deepseek-v4-pro → deepseek-v4-pro）"""
+    vendor = VENDOR_LABELS.get(synced_from or "", synced_from or "未知")
+    short = slug
+    if slug.startswith("ark-"):
+        short = slug[4:]
+    return f"[{vendor}][{short}]"
 
 
 def configured_catalog_path() -> Optional[Path]:
@@ -95,7 +115,8 @@ async def load_visible_models(db: AsyncSession) -> list[dict]:
     )
     models = result.scalars().all()
     return [
-        {"id": m.id, "display_name": m.display_name or m.id, "context_window": m.context_window}
+        {"id": m.id, "display_name": m.display_name or m.id,
+         "context_window": m.context_window, "synced_from": m.synced_from}
         for m in models
     ]
 
@@ -106,6 +127,7 @@ def render_catalog(gateway_models: list[dict], existing: dict) -> dict:
     gateway_ids = {m["id"] for m in gateway_models}
     ctx_map = {m["id"]: m["context_window"] for m in gateway_models}
     name_map = {m["id"]: m["display_name"] for m in gateway_models}
+    vendor_map = {m["id"]: m.get("synced_from") for m in gateway_models}
 
     new_models = []
     for mid in sorted(gateway_ids):
@@ -118,8 +140,8 @@ def render_catalog(gateway_models: list[dict], existing: dict) -> dict:
             # 已有条目：用模板补齐缺失字段（旧条目可能缺字段导致 Codex 解析失败）
             for k, v in _TEMPLATE.items():
                 entry.setdefault(k, v)
-        # 描述统一 [厂商][模型] 格式
-        entry["description"] = _describe(entry.get("display_name") or mid, mid)
+        # 描述统一 [厂商][模型名] 格式
+        entry["description"] = _describe(mid, vendor_map.get(mid))
         # 行为相关字段强制用模板值（0.147 选择器在 reasoning 档位 len==1 时才选完即关）
         entry["default_reasoning_level"] = _TEMPLATE["default_reasoning_level"]
         entry["supported_reasoning_levels"] = _TEMPLATE["supported_reasoning_levels"]

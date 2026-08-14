@@ -46,8 +46,8 @@ async def test_load_visible_models_rule(db_session):
 def test_render_catalog_merge():
     """合并：保留已有自定义字段、新增补模板、删除消失的"""
     gateway = [
-        {"id": "keep-model", "display_name": "Keep", "context_window": 131072},
-        {"id": "new-model", "display_name": "New", "context_window": None},
+        {"id": "keep-model", "display_name": "Keep", "context_window": 131072, "synced_from": "glm"},
+        {"id": "ark-deepseek-v4-pro", "display_name": "New", "context_window": None, "synced_from": "ark-plan"},
     ]
     existing = {"models": [
         {"slug": "keep-model", "display_name": "【自定义】Keep", "description": "用户备注",
@@ -58,15 +58,16 @@ def test_render_catalog_merge():
 
     catalog = codex_catalog.render_catalog(gateway, existing)
     slugs = {m["slug"] for m in catalog["models"]}
-    assert slugs == {"keep-model", "new-model"}
+    assert slugs == {"keep-model", "ark-deepseek-v4-pro"}
 
     keep = next(m for m in catalog["models"] if m["slug"] == "keep-model")
     assert keep["display_name"] == "【自定义】Keep"          # 自定义名称保留
-    assert keep["description"] == "[【自定义】Keep][keep-model]"  # 描述统一 [厂商][模型]
+    assert keep["description"] == "[智谱][keep-model]"       # 描述统一 [厂商][模型名]
     assert keep["context_window"] == 131072                  # 上下文以网关为准更新
 
-    new = next(m for m in catalog["models"] if m["slug"] == "new-model")
+    new = next(m for m in catalog["models"] if m["slug"] == "ark-deepseek-v4-pro")
     assert new["display_name"] == "New"
+    assert new["description"] == "[方舟][deepseek-v4-pro]"   # ark- 前缀剥离
     assert new["supports_parallel_tool_calls"] is True       # 模板字段补齐
     assert "supported_reasoning_levels" in new
     assert "model_messages" in new                           # 0.147 必填 instructions_template
