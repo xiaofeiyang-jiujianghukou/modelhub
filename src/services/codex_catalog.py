@@ -33,7 +33,10 @@ _TEMPLATE = {
     "display_name": "",
     "description": "",   # 渲染时统一为 [厂商][模型] 格式
     "default_reasoning_level": "medium",
-    "supported_reasoning_levels": [],
+    # 恰好 1 个档位：0.147 的模型选择器在 supported_reasoning_efforts.len()==1 时才选完即关
+    # 元素结构为 ReasoningEffortPreset{effort, description(必填)}——
+    # 旧格式 {effort, options} 缺 description 会报 "missing field description"（黑盒+源码确认）
+    "supported_reasoning_levels": [{"effort": "medium", "description": "Medium"}],
     "shell_type": "shell_command",
     "visibility": "list",
     "supported_in_api": True,
@@ -117,6 +120,9 @@ def render_catalog(gateway_models: list[dict], existing: dict) -> dict:
                 entry.setdefault(k, v)
         # 描述统一 [厂商][模型] 格式
         entry["description"] = _describe(entry.get("display_name") or mid, mid)
+        # 行为相关字段强制用模板值（0.147 选择器在 reasoning 档位 len==1 时才选完即关）
+        entry["default_reasoning_level"] = _TEMPLATE["default_reasoning_level"]
+        entry["supported_reasoning_levels"] = _TEMPLATE["supported_reasoning_levels"]
         ctx = ctx_map.get(mid)
         if ctx:
             entry["context_window"] = ctx
