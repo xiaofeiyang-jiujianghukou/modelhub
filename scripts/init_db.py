@@ -26,12 +26,14 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from src.database import init_db  # noqa: E402
-from src.models import Base, Provider, ModelCatalog, RouteChannel  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from src.models import Base, Provider, ModelCatalog, RouteChannel, User, Balance  # noqa: E402
+from sqlalchemy import select, func  # noqa: E402
 
 from src.providers.provider_registry import PROVIDER_REGISTRY  # noqa: E402
 from src.services.crypto import encrypt_credentials  # noqa: E402
 from scripts.generate_encryption_key import ensure_encryption_key  # noqa: E402
+from src.config import settings  # noqa: E402
+from src.middleware.auth import _hash_password  # noqa: E402
 
 # .env 环境变量 → 供应商 key 映射（static 供应商种子时读取）
 ENV_KEY_MAP = {
@@ -58,6 +60,20 @@ async def seed(reset: bool = False) -> None:
     ensure_encryption_key()
 
     async with AsyncSessionLocal() as db:
+        # 步骤 1: 默认创建初始管理员（全新库无任何用户时）
+        user_count = await db.scalar(select(func.count()).select_from(User))
+        if user_count == 0:
+            admin = User(
+                email="admin@modelhub.com",
+                password_hash=_hash_password("modelhub"),
+                display_name="admin",
+                is_admin=True,
+            )
+            db.add(admin)
+            await db.flush()
+            db.add(Balance(user_id=admin.id, amount_usd=settings.signup_bonus_usd))
+            print("  ➕ 初始管理员: admin@modelhub.com / modelhub")
+
         created_providers = 0
         created_models = 0
         for key, spec in PROVIDER_REGISTRY.items():
