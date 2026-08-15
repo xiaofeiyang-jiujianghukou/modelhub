@@ -17,6 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # 复制源码（放在依赖之后，源码变更不影响依赖层缓存）
 COPY src/ src/
 COPY web/ web/
+COPY scripts/ scripts/
 
 # 环境变量（生产环境通过 docker-compose / 环境注入覆盖）
 ENV HOST=0.0.0.0
@@ -25,4 +26,5 @@ ENV DEBUG=false
 
 EXPOSE 8000
 
-CMD ["python3", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动前先初始化（幂等 seed：默认管理员 + 供应商 + 模型），再启动服务
+CMD ["sh", "-c", "python scripts/init_db.py && python -m uvicorn src.main:app --host 0.0.0.0 --port 8000"]
