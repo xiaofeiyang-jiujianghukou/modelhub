@@ -33,7 +33,7 @@ services:
 
   # Redis 缓存（生产环境推荐）
   redis:
-    image: redis:7-alpine
+    image: crpi-27zlqugq2208c0pz.cn-hangzhou.personal.cr.aliyuncs.com/xiaofeiyang930112/redis:7-alpine
     container_name: gateway-redis
     restart: unless-stopped
     profiles: ["full"]
