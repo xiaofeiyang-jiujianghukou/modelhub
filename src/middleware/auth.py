@@ -228,7 +228,7 @@ class AuthService:
         db.add(user)
         # 同时初始化余额记录
         await db.flush()
-        balance = Balance(user_id=user.id, amount_usd=0.0)
+        balance = Balance(user_id=user.id, amount_usd=settings.signup_bonus_usd)
         db.add(balance)
         await db.commit()
         await db.refresh(user)

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     rate_limit_rpm: int = 300          # per-user RPM
     rate_limit_global_rpm: int = 10000  # 全局 RPM
 
+    # ── 计费配置 ────────────────────────────────────────────────
+    signup_bonus_usd: float = 10.0     # 新用户注册赠送额度（商用可设 0）
+
     # ── 路由配置 ────────────────────────────────────────────────
     max_retries: int = 2               # 故障转移最大重试次数
     upstream_timeout_seconds: float = 30.0
