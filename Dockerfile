@@ -1,13 +1,20 @@
 # 多模型智能编排网关 - Docker 镜像
-FROM python:3.12-slim
+# 基础镜像：阿里云 ACR（国内加速）
+FROM crpi-27zlqugq2208c0pz.cn-hangzhou.personal.cr.aliyuncs.com/xiaofeiyang930112/python:3.12-slim
 
 WORKDIR /app
 
-# 安装依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pip 走国内镜像源（清华）
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
 
-# 复制源码
+# 安装依赖
+# - 先 COPY requirements.txt（不常变），改代码不会触发重装依赖 → 利用 Docker 分层缓存
+# - BuildKit cache mount 缓存 pip 下载，跨构建复用，不进入最终镜像
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# 复制源码（放在依赖之后，源码变更不影响依赖层缓存）
 COPY src/ src/
 COPY web/ web/
 
