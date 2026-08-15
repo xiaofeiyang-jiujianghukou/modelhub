@@ -129,13 +129,12 @@ async def test_health_no_auth(test_engine, _patch_global_db):
 
 @pytest.mark.asyncio
 async def test_root(test_engine, _patch_global_db):
-    """根路径返回服务信息"""
+    """根路径跳转到 Web 控制台"""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get("/")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "name" in data and "version" in data
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/dashboard"
 
 
 @pytest.mark.asyncio

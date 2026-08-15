@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
 
 from src.config import settings
@@ -141,12 +141,8 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """根路径，返回服务信息"""
-    return {
-        "name": settings.app_name,
-        "version": settings.app_version,
-        "status": "running",
-    }
+    """根路径，跳转到 Web 控制台（未登录由前端自动跳 /login）"""
+    return RedirectResponse(url="/dashboard")
 
 
 # ── 启动入口 ───────────────────────────────────────────────────────────────────
