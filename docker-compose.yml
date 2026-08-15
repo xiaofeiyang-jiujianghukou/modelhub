@@ -20,7 +20,7 @@ services:
   # PostgreSQL（生产环境推荐）
   # 启用后修改 .env: DATABASE_URL=postgresql+asyncpg://gateway:secret@db:5432/gateway
   db:
-    image: postgres:16-alpine
+    image: crpi-27zlqugq2208c0pz.cn-hangzhou.personal.cr.aliyuncs.com/xiaofeiyang930112/postgres:16-alpine
     container_name: gateway-db
     environment:
       POSTGRES_USER: gateway
