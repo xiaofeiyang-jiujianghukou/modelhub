@@ -2,8 +2,8 @@
 供应商注册表：11 家供应商元数据配置（单一数据源）
 
 - 每供应商一条 ProviderSpec
-- model_source='api'：添加 Key 后自动 GET /models 拉取（DeepSeek/Moonshot/MiniMax/OpenAI/Claude/Grok/Gemini）
-- model_source='static'：无官方 /models 端点，使用内置清单（方舟 Coding Plan/混元/百炼/智谱）
+- model_source='api'：添加 Key 后自动 GET /models 拉取（DeepSeek/Moonshot/MiniMax/OpenAI/Claude/Grok/Gemini/方舟）
+- model_source='static'：无官方 /models 端点，使用内置清单（混元/百炼/智谱）
 - 静态清单价格为官方文档人工核对值（price_source='official'）；无法核实的用网关默认价（'default'）
 """
 
@@ -48,6 +48,7 @@ class ProviderSpec:
     known_prices: Tuple[Tuple[str, float, float], ...] = ()  # (模型ID, 输入价, 输出价) 官方文档核对价
     known_contexts: Tuple[Tuple[str, int], ...] = ()  # (模型ID, 上下文窗口) 官方文档核对值
     model_id_map: Tuple[Tuple[str, str], ...] = ()  # (上游模型ID, 网关统一ID) 同名模型归一化（如百炼 glm-5.2 → glm-5-2）
+    keep_latest_only: bool = False  # 同厂商同类型只保留最新版本，同步时移除旧版（方舟多版本日期后缀模型用）
 
 
 def _excluded(model_id: str, patterns: Tuple[str, ...]) -> bool:
@@ -67,12 +68,17 @@ _PROVIDER_SPECS = [
         key="deepseek", display_name="DeepSeek",
         default_base_url="https://api.deepseek.com/v1",
     ),
-    # ── 火山方舟 Coding Plan（无 /models 端点，静态清单）──
-    # 模型清单 + 价格 + 上下文见 config/model_reference.json（数据与代码分离，变更只改 JSON）
+    # ── 火山方舟 Coding Plan（/api/coding/v1/models 可用，api 拉取）──
+    # 方舟 /models 返回全量（含 Shutdown/Retiring 退役 + embedding/3D 等），
+    # 由 _fetch_ark parser 过滤退役模型 + 排除网关不支持的 embedding/3D/router，
+    # 并按 id 识别 model_type（seedream→image / seedance→video / 其余→llm）
     ProviderSpec(
         key="ark", display_name="方舟",
         default_base_url="https://ark.cn-beijing.volces.com/api/coding/v1",
-        model_source="static",
+        model_source="api",
+        models_parser="ark",
+        exclude_patterns=("embedding", "hyper3d", "hitem3d", "seed3d", "smart-router", "seed-translation"),
+        keep_latest_only=True,
     ),
     # ── 腾讯混元（无 /v1/models，静态清单）─────────────────────────────────────
     # 注意：4 个旧模型已从现行官方文档移除（迁移 TokenHub，停止新购）；价格为历史官方公告价

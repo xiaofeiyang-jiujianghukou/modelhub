@@ -39,6 +39,7 @@ class SyncedModel:
     context_window: Optional[int] = None
     price_source: str = "default"
     upstream_model: Optional[str] = None   # 上游真实模型名（static 清单与网关 id 可能不同）
+    created: Optional[int] = None          # 上游 Unix 时间戳（判断新旧版本用）
 
 
 class SyncResult(BaseModel):
@@ -47,6 +48,7 @@ class SyncResult(BaseModel):
     added: int = 0
     updated: int = 0
     skipped: int = 0
+    removed: int = 0                 # keep_latest_only 移除的旧版本数
     errors: list[str] = []
     model_ids: list[str] = []
 
@@ -80,6 +82,58 @@ async def _fetch_openai_style(spec: ProviderSpec, base_url: str, api_key: str, t
             display_name=item.get("display_name", "") or item.get("displayName", ""),
             owned_by=item.get("owned_by", ""),
             context_window=item.get("context_length") or item.get("context_window"),
+            price_source="default",
+        ))
+    return models
+
+
+def _ark_base_name(model_id: str) -> str:
+    """去掉方舟模型 id 的日期/版本后缀，得到基础名（同组识别）
+
+    deepseek-v4-pro-ga-260813  → deepseek-v4-pro
+    doubao-seed-2-0-lite-260428 → doubao-seed-2-0-lite
+    doubao-seedream-4-0-20260415 → doubao-seedream-4-0
+    glm-5-2-260617              → glm-5-2（无同组）
+    """
+    import re as _re
+    return _re.sub(r'-(?:ga-)?\d{6,8}$', '', model_id)
+
+
+async def _fetch_ark(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
+    """方舟：OpenAI 风格 /models，但带 status 生命周期字段（Shutdown/Retiring/空）
+
+    - 跳过 status=Shutdown/Retiring（已退役下线，拉进来也无法调用）
+    - 跳过 exclude_patterns（embedding/3D/smart-router 等网关无调用协议的类型）
+    - model_type 按 id 识别：seedream→image / seedance→video / 其余→llm
+      （方舟 Agent Plan 已接入 GLM/deepseek/qwen 等，统一按 llm 收编）
+    - created 携带上游时间戳，供 keep_latest_only 同组去重
+    """
+    data = await _http_get(
+        f"{base_url.rstrip('/')}/models",
+        {"Authorization": f"Bearer {api_key}"},
+        timeout,
+    )
+    models: list[SyncedModel] = []
+    for item in data.get("data", []):
+        mid = item.get("id", "")
+        if not mid or _excluded(mid, spec.exclude_patterns):
+            continue
+        status = (item.get("status") or "").lower()
+        if status in ("shutdown", "retiring"):
+            continue
+        low = mid.lower()
+        if "seedance" in low:
+            mtype = "video"
+        elif "seedream" in low:
+            mtype = "image"
+        else:
+            mtype = "llm"
+        models.append(SyncedModel(
+            id=mid,
+            display_name=item.get("display_name", "") or item.get("name", ""),
+            owned_by="ark",
+            model_type=mtype,
+            created=item.get("created"),
             price_source="default",
         ))
     return models
@@ -210,6 +264,8 @@ async def _fetch_gemini(spec: ProviderSpec, base_url: str, api_key: str, timeout
 async def fetch_models(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
     """按注册表配置分发到对应解析器"""
     parser = spec.models_parser
+    if parser == "ark":
+        return await _fetch_ark(spec, base_url, api_key, timeout)
     if parser == "anthropic":
         return await _fetch_anthropic(spec, base_url, api_key, timeout)
     if parser == "gemini":
@@ -274,6 +330,16 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 if sm.context_window is None and ref and ref.context_window is not None:
                     sm.context_window = ref.context_window
 
+        # 1.5 同厂商同类型只保留最新版（keep_latest_only）：按基础名+类型分组，留 created 最新
+        if spec.keep_latest_only:
+            best: dict[tuple, SyncedModel] = {}
+            for sm in synced:
+                key = (_ark_base_name(sm.id), sm.model_type)
+                cur = best.get(key)
+                if cur is None or (sm.created or -1) > (cur.created or -1):
+                    best[key] = sm
+            synced = list(best.values())
+
         # 2. 事务内 upsert（模型名 + 厂商 复合唯一）
         for sm in synced:
             upstream = sm.upstream_model or sm.id
@@ -325,6 +391,20 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 ))
                 result.added += 1
             result.model_ids.append(sm.id)
+
+        # 2.5 keep_latest_only：移除同组旧版本（DB 中基础名匹配、但 id 不在本次保留集合）
+        if spec.keep_latest_only:
+            retained_ids = {sm.id for sm in synced}
+            retained_bases = {_ark_base_name(sm.id) for sm in synced}
+            db_models = (await db.execute(
+                select(Model).where(Model.vendor == spec.key)
+            )).scalars().all()
+            for m in db_models:
+                if m.model in retained_ids:
+                    continue
+                if _ark_base_name(m.model) in retained_bases:
+                    await db.delete(m)
+                    result.removed += 1
 
         # 3. 更新 provider 同步状态
         provider.last_synced_at = now

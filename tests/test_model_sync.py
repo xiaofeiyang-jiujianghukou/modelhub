@@ -58,6 +58,93 @@ async def test_openai_parser_and_exclude(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ark_parser_filter_and_typing(db_session, monkeypatch):
+    """方舟 parser：过滤 Shutdown/Retiring + 排除 embedding/3D/router + 识别 model_type"""
+    async def fake_get(url, headers, timeout, params=None):
+        assert "/models" in url
+        return {"object": "list", "data": [
+            # 可用 LLM（方舟 Agent Plan 已接入 GLM/deepseek 等）
+            {"id": "doubao-seed-2-1-pro-260628", "status": None},
+            {"id": "doubao-seed-2-1-turbo-260628", "status": None},
+            {"id": "deepseek-v4-pro-ga-260813", "status": None},
+            {"id": "glm-5-2-260617", "status": None},
+            # 图像 / 视频
+            {"id": "doubao-seedream-4-0-250828", "status": None},
+            {"id": "doubao-seedance-2-5-260628", "status": None},
+            # 应排除：embedding / 3D / router
+            {"id": "doubao-embedding-vision-250615", "status": None},
+            {"id": "hyper3d-gen2-260112", "status": None},
+            {"id": "doubao-smart-router-250928", "status": None},
+            # 应跳过：退役模型
+            {"id": "doubao-pro-32k-241215", "status": "Shutdown"},
+            {"id": "doubao-1-5-pro-32k-250115", "status": "Retiring"},
+        ]}
+    monkeypatch.setattr(model_sync, "_http_get", fake_get)
+
+    provider = await _make_provider(db_session, "ark")
+    spec = get_spec("ark")
+    result = await sync_provider_models(db_session, provider, spec)
+
+    assert result.status == "success"
+    assert result.added == 6, result.model_ids
+    ids = set(result.model_ids)
+    assert "doubao-seed-2-1-pro-260628" in ids
+    assert "glm-5-2-260617" in ids
+    # 排除/退役未入库
+    assert "doubao-embedding-vision-250615" not in ids
+    assert "doubao-pro-32k-241215" not in ids
+
+    # model_type 识别
+    dream = (await db_session.execute(select(Model).where(Model.model == "doubao-seedream-4-0-250828").limit(1))).scalars().first()
+    dance = (await db_session.execute(select(Model).where(Model.model == "doubao-seedance-2-5-260628").limit(1))).scalars().first()
+    llm = (await db_session.execute(select(Model).where(Model.model == "glm-5-2-260617").limit(1))).scalars().first()
+    assert dream is not None and dream.model_type == "image"
+    assert dance is not None and dance.model_type == "video"
+    assert llm is not None and llm.model_type == "llm"
+
+
+@pytest.mark.asyncio
+async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
+    """方舟 keep_latest_only：同厂商同类型只留最新版，移除旧版本（含无后缀历史模型）"""
+    # 预置一个无后缀的旧模型（历史 static 遗留，应被同组新版替代移除）
+    db_session.add(Model(
+        model="deepseek-v4-pro", vendor="ark", display_name="deepseek-v4-pro",
+        owned_by="ark", model_type="llm", price_source="default",
+        synced_from="ark", is_active=True,
+    ))
+    await db_session.commit()
+
+    async def fake_get(url, headers, timeout, params=None):
+        return {"object": "list", "data": [
+            {"id": "deepseek-v4-pro-260425", "status": None, "created": 1778837387},
+            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # 最新
+            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 1781612321},
+            {"id": "doubao-seedream-4-0-250828", "status": None, "created": 1757244120},
+            {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # 更新
+        ]}
+    monkeypatch.setattr(model_sync, "_http_get", fake_get)
+
+    provider = await _make_provider(db_session, "ark")
+    spec = get_spec("ark")
+    result = await sync_provider_models(db_session, provider, spec)
+
+    assert result.status == "success"
+    assert result.added == 3, result.model_ids
+    assert result.removed == 1
+    assert set(result.model_ids) == {
+        "deepseek-v4-pro-ga-260813",
+        "doubao-seed-2-1-turbo-260628",
+        "doubao-seedream-4-0-20260415",
+    }
+
+    # DB 校验：无后缀旧版被删，最新版入库
+    old = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro", Model.vendor == "ark").limit(1))).scalars().first()
+    new = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro-ga-260813").limit(1))).scalars().first()
+    assert old is None
+    assert new is not None
+
+
+@pytest.mark.asyncio
 async def test_grok_official_pricing(db_session, monkeypatch):
     """xAI 响应自带官方价格 → price_source=official"""
     async def fake_get(url, headers, timeout, params=None):
