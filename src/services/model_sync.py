@@ -124,10 +124,15 @@ def _ark_family(model_id: str) -> str:
 
 # 方舟家族保留特例：family → 保留的基础名集合（不同规格都留最新版）
 # 未列出的家族默认只保留 created 最新一个代表
+# 注意：仅保留 Coding Plan 套餐内模型（实测），旗舰/按量模型（evolving/2-1-pro/qwen 全系）不保留
 _ARK_KEEP_BASES: dict[str, set[str]] = {
-    "deepseek": {"deepseek-v4-pro", "deepseek-v4-flash"},  # pro(强) + flash(快) 都是主力
-    "qwen": {"qwen3-32b"},                                  # qwen 只留最强
+    "deepseek": {"deepseek-v4-pro", "deepseek-v4-flash"},  # 套餐内 pro(强) + flash(快)
+    "doubao-seed": {"doubao-seed-2-1-turbo"},              # 套餐内（evolving/2-1-pro 旗舰走按量，排除）
 }
+
+# 方舟管理的全部家族：同步时这些家族下未保留的模型一律清理（含被 exclude 排除后残留的旧模型）
+# kimi/minimax 等方舟 /models 不返回的家族不在内，保留不动
+_ARK_MANAGED_FAMILIES = {"seedream", "seedance", "doubao-seed", "qwen", "glm", "deepseek"}
 
 
 async def _fetch_ark(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
@@ -435,17 +440,17 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 result.added += 1
             result.model_ids.append(sm.id)
 
-        # 2.5 keep_latest_only：移除同家族旧版本（DB 中家族匹配、但 id 不在本次保留集合）
+        # 2.5 keep_latest_only：清理管理家族内未保留的模型（含旧版本与被 exclude 排除后残留的）
+        #     kimi/minimax 等非管理家族模型保留不动
         if spec.keep_latest_only:
             retained_ids = {sm.id for sm in synced}
-            retained_families = {_ark_family(sm.id) for sm in synced}
             db_models = (await db.execute(
                 select(Model).where(Model.vendor == spec.key)
             )).scalars().all()
             for m in db_models:
                 if m.model in retained_ids:
                     continue
-                if _ark_family(m.model) in retained_families:
+                if _ark_family(m.model) in _ARK_MANAGED_FAMILIES:
                     await db.delete(m)
                     result.removed += 1
 

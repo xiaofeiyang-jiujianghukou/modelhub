@@ -77,7 +77,7 @@ _PROVIDER_SPECS = [
         default_base_url="https://ark.cn-beijing.volces.com/api/coding/v1",
         model_source="api",
         models_parser="ark",
-        exclude_patterns=("embedding", "hyper3d", "hitem3d", "seed3d", "smart-router", "seed-translation"),
+        exclude_patterns=("embedding", "hyper3d", "hitem3d", "seed3d", "smart-router", "seed-translation", "qwen"),
         keep_latest_only=True,
     ),
     # ── 腾讯混元（无 /v1/models，静态清单）─────────────────────────────────────

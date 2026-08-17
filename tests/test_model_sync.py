@@ -105,10 +105,15 @@ async def test_ark_parser_filter_and_typing(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
-    """方舟 keep_latest_only：每家族只留最新代表 + 去日期后缀 + 移除旧版本"""
-    # 预置一个带日期的旧模型（模拟 DB 历史，应被同家族最新替代后移除）
+    """方舟 keep_latest_only：每家族只留最新代表 + 去日期 + 排除非套餐(qwen) + 移除旧版本"""
+    # 预置旧版（deepseek-v4-pro-260425 同家族旧版 + qwen3-32b 被 exclude 后的残留），都应被清理
     db_session.add(Model(
         model="deepseek-v4-pro-260425", vendor="ark", display_name="old",
+        owned_by="ark", model_type="llm", price_source="default",
+        synced_from="ark", is_active=True,
+    ))
+    db_session.add(Model(
+        model="qwen3-32b", vendor="ark", display_name="qwen-residual",
         owned_by="ark", model_type="llm", price_source="default",
         synced_from="ark", is_active=True,
     ))
@@ -118,11 +123,13 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
         return {"object": "list", "data": [
             {"id": "deepseek-v4-pro-260425", "status": None, "created": 1778837387},
             {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # deepseek pro 最新
-            {"id": "deepseek-v4-flash-ga-260731", "status": None, "created": 1785748879},  # deepseek flash 最新（规格保留）
+            {"id": "deepseek-v4-flash-ga-260731", "status": None, "created": 1785748879},  # deepseek flash 最新
+            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 1781612321},  # 套餐内
+            {"id": "doubao-seed-2-1-pro-260628", "status": None, "created": 1782000000},  # 旗舰，_ARK_KEEP_BASES 外丢弃
             {"id": "doubao-seedream-4-0-250828", "status": None, "created": 1757244120},
-            {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # seedream 家族最新
-            {"id": "qwen3-8b-20250429", "status": None, "created": 1770000000},  # qwen 家族较新但非 32b
-            {"id": "qwen3-32b-20250429", "status": None, "created": 1757244120},  # 用户指定保留
+            {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # seedream 最新
+            {"id": "qwen3-32b-20250429", "status": None, "created": 1780000000},  # 非套餐，exclude_patterns 过滤
+            {"id": "qwen3-8b-20250429", "status": None, "created": 1770000000},
         ]}
     monkeypatch.setattr(model_sync, "_http_get", fake_get)
 
@@ -131,9 +138,9 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     result = await sync_provider_models(db_session, provider, spec)
 
     assert result.status == "success"
-    assert result.removed == 1  # deepseek-v4-pro-260425 预置旧版被删
+    assert result.removed == 2  # deepseek-v4-pro-260425 旧版 + qwen3-32b 残留都被删
     assert set(result.model_ids) == {
-        "deepseek-v4-pro", "deepseek-v4-flash", "doubao-seedream-4-0", "qwen3-32b",
+        "deepseek-v4-pro", "deepseek-v4-flash", "doubao-seed-2-1-turbo", "doubao-seedream-4-0",
     }
 
     # 去日期：网关 id 是干净名，upstream 保留带日期原始 id
@@ -146,11 +153,14 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     # 旧版被删
     old = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro-260425", Model.vendor == "ark").limit(1))).scalars().first()
     assert old is None
-    # qwen 特例：留 32b 而非 8b
+    # doubao-seed 只留套餐内 2-1-turbo，旗舰 2-1-pro 丢弃
+    turbo = (await db_session.execute(select(Model).where(Model.model == "doubao-seed-2-1-turbo", Model.vendor == "ark").limit(1))).scalars().first()
+    pro2 = (await db_session.execute(select(Model).where(Model.model == "doubao-seed-2-1-pro", Model.vendor == "ark").limit(1))).scalars().first()
+    assert turbo is not None
+    assert pro2 is None
+    # qwen 全系被 exclude 过滤
     qwen = (await db_session.execute(select(Model).where(Model.model == "qwen3-32b", Model.vendor == "ark").limit(1))).scalars().first()
-    qwen8 = (await db_session.execute(select(Model).where(Model.model == "qwen3-8b-20250429", Model.vendor == "ark").limit(1))).scalars().first()
-    assert qwen is not None
-    assert qwen8 is None
+    assert qwen is None
 
 
 @pytest.mark.asyncio
