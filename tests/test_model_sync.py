@@ -59,25 +59,25 @@ async def test_openai_parser_and_exclude(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ark_parser_filter_and_typing(db_session, monkeypatch):
-    """方舟 parser：过滤 Shutdown/Retiring + 排除 embedding/3D/router + 识别 model_type"""
+    """方舟 parser：过滤退役 + 排除不支持 + 家族去重（doubao-seed 只留最新）+ model_type 分类"""
     async def fake_get(url, headers, timeout, params=None):
         assert "/models" in url
         return {"object": "list", "data": [
             # 可用 LLM（方舟 Agent Plan 已接入 GLM/deepseek 等）
-            {"id": "doubao-seed-2-1-pro-260628", "status": None},
-            {"id": "doubao-seed-2-1-turbo-260628", "status": None},
-            {"id": "deepseek-v4-pro-ga-260813", "status": None},
-            {"id": "glm-5-2-260617", "status": None},
+            {"id": "doubao-seed-2-1-pro-260628", "status": None, "created": 100},
+            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 200},  # doubao-seed 家族最新
+            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 300},
+            {"id": "glm-5-2-260617", "status": None, "created": 400},
             # 图像 / 视频
-            {"id": "doubao-seedream-4-0-250828", "status": None},
-            {"id": "doubao-seedance-2-5-260628", "status": None},
+            {"id": "doubao-seedream-4-0-250828", "status": None, "created": 500},
+            {"id": "doubao-seedance-2-5-260628", "status": None, "created": 600},
             # 应排除：embedding / 3D / router
-            {"id": "doubao-embedding-vision-250615", "status": None},
-            {"id": "hyper3d-gen2-260112", "status": None},
-            {"id": "doubao-smart-router-250928", "status": None},
+            {"id": "doubao-embedding-vision-250615", "status": None, "created": 700},
+            {"id": "hyper3d-gen2-260112", "status": None, "created": 800},
+            {"id": "doubao-smart-router-250928", "status": None, "created": 900},
             # 应跳过：退役模型
-            {"id": "doubao-pro-32k-241215", "status": "Shutdown"},
-            {"id": "doubao-1-5-pro-32k-250115", "status": "Retiring"},
+            {"id": "doubao-pro-32k-241215", "status": "Shutdown", "created": 1000},
+            {"id": "doubao-1-5-pro-32k-250115", "status": "Retiring", "created": 1100},
         ]}
     monkeypatch.setattr(model_sync, "_http_get", fake_get)
 
@@ -86,18 +86,18 @@ async def test_ark_parser_filter_and_typing(db_session, monkeypatch):
     result = await sync_provider_models(db_session, provider, spec)
 
     assert result.status == "success"
-    assert result.added == 6, result.model_ids
-    ids = set(result.model_ids)
-    assert "doubao-seed-2-1-pro-260628" in ids
-    assert "glm-5-2-260617" in ids
+    assert result.added == 5, result.model_ids  # 5 个家族代表
+    assert set(result.model_ids) == {
+        "doubao-seed-2-1-turbo", "deepseek-v4-pro", "glm-5-2", "doubao-seedream-4-0", "doubao-seedance-2-5",
+    }
     # 排除/退役未入库
-    assert "doubao-embedding-vision-250615" not in ids
-    assert "doubao-pro-32k-241215" not in ids
+    assert "doubao-embedding-vision-250615" not in result.model_ids
+    assert "doubao-pro-32k-241215" not in result.model_ids
 
-    # model_type 识别
-    dream = (await db_session.execute(select(Model).where(Model.model == "doubao-seedream-4-0-250828").limit(1))).scalars().first()
-    dance = (await db_session.execute(select(Model).where(Model.model == "doubao-seedance-2-5-260628").limit(1))).scalars().first()
-    llm = (await db_session.execute(select(Model).where(Model.model == "glm-5-2-260617").limit(1))).scalars().first()
+    # model_type 分类（clean id）
+    dream = (await db_session.execute(select(Model).where(Model.model == "doubao-seedream-4-0").limit(1))).scalars().first()
+    dance = (await db_session.execute(select(Model).where(Model.model == "doubao-seedance-2-5").limit(1))).scalars().first()
+    llm = (await db_session.execute(select(Model).where(Model.model == "glm-5-2").limit(1))).scalars().first()
     assert dream is not None and dream.model_type == "image"
     assert dance is not None and dance.model_type == "video"
     assert llm is not None and llm.model_type == "llm"
@@ -105,10 +105,10 @@ async def test_ark_parser_filter_and_typing(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
-    """方舟 keep_latest_only：同厂商同类型只留最新版，移除旧版本（含无后缀历史模型）"""
-    # 预置一个无后缀的旧模型（历史 static 遗留，应被同组新版替代移除）
+    """方舟 keep_latest_only：每家族只留最新代表 + 去日期后缀 + 移除旧版本"""
+    # 预置一个带日期的旧模型（模拟 DB 历史，应被同家族最新替代后移除）
     db_session.add(Model(
-        model="deepseek-v4-pro", vendor="ark", display_name="deepseek-v4-pro",
+        model="deepseek-v4-pro-260425", vendor="ark", display_name="old",
         owned_by="ark", model_type="llm", price_source="default",
         synced_from="ark", is_active=True,
     ))
@@ -117,10 +117,11 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     async def fake_get(url, headers, timeout, params=None):
         return {"object": "list", "data": [
             {"id": "deepseek-v4-pro-260425", "status": None, "created": 1778837387},
-            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # 最新
-            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 1781612321},
+            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # deepseek 家族最新
             {"id": "doubao-seedream-4-0-250828", "status": None, "created": 1757244120},
-            {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # 更新
+            {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # seedream 家族最新
+            {"id": "qwen3-8b-20250429", "status": None, "created": 1770000000},  # qwen 家族较新但非 32b
+            {"id": "qwen3-32b-20250429", "status": None, "created": 1757244120},  # 用户指定保留
         ]}
     monkeypatch.setattr(model_sync, "_http_get", fake_get)
 
@@ -129,19 +130,21 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     result = await sync_provider_models(db_session, provider, spec)
 
     assert result.status == "success"
-    assert result.added == 3, result.model_ids
-    assert result.removed == 1
-    assert set(result.model_ids) == {
-        "deepseek-v4-pro-ga-260813",
-        "doubao-seed-2-1-turbo-260628",
-        "doubao-seedream-4-0-20260415",
-    }
+    assert result.removed == 1  # deepseek-v4-pro-260425 预置旧版被删
+    assert set(result.model_ids) == {"deepseek-v4-pro", "doubao-seedream-4-0", "qwen3-32b"}
 
-    # DB 校验：无后缀旧版被删，最新版入库
-    old = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro", Model.vendor == "ark").limit(1))).scalars().first()
-    new = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro-ga-260813").limit(1))).scalars().first()
+    # 去日期：网关 id 是干净名，upstream 保留带日期原始 id
+    clean = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro", Model.vendor == "ark").limit(1))).scalars().first()
+    assert clean is not None
+    assert clean.upstream_model == "deepseek-v4-pro-ga-260813"
+    # 旧版被删
+    old = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro-260425", Model.vendor == "ark").limit(1))).scalars().first()
     assert old is None
-    assert new is not None
+    # qwen 特例：留 32b 而非 8b
+    qwen = (await db_session.execute(select(Model).where(Model.model == "qwen3-32b", Model.vendor == "ark").limit(1))).scalars().first()
+    qwen8 = (await db_session.execute(select(Model).where(Model.model == "qwen3-8b-20250429", Model.vendor == "ark").limit(1))).scalars().first()
+    assert qwen is not None
+    assert qwen8 is None
 
 
 @pytest.mark.asyncio

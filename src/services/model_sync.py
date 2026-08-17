@@ -99,6 +99,29 @@ def _ark_base_name(model_id: str) -> str:
     return _re.sub(r'-(?:ga-)?\d{6,8}$', '', model_id)
 
 
+def _ark_family(model_id: str) -> str:
+    """方舟模型家族（系列）识别：每家族只保留最新代表时用
+
+    doubao-seedream-5-0-pro-260628 → seedream（图像）
+    doubao-seedance-2-5-260628     → seedance（视频）
+    doubao-seed-2-1-pro-260628     → doubao-seed（LLM 主力线）
+    qwen3-32b-20250429             → qwen
+    glm-5-2-260617                 → glm
+    deepseek-v4-pro-ga-260813      → deepseek
+    """
+    low = model_id.lower()
+    if low.startswith("doubao-seedream"):
+        return "seedream"
+    if low.startswith("doubao-seedance"):
+        return "seedance"
+    if low.startswith("doubao-seed"):
+        return "doubao-seed"
+    for fam in ("qwen", "glm", "deepseek", "kimi", "minimax"):
+        if low.startswith(fam):
+            return fam
+    return "other"
+
+
 async def _fetch_ark(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
     """方舟：OpenAI 风格 /models，但带 status 生命周期字段（Shutdown/Retiring/空）
 
@@ -330,14 +353,23 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 if sm.context_window is None and ref and ref.context_window is not None:
                     sm.context_window = ref.context_window
 
-        # 1.5 同厂商同类型只保留最新版（keep_latest_only）：按基础名+类型分组，留 created 最新
+        # 1.5 keep_latest_only：每家族只保留最新代表（created 最新；qwen 固定 qwen3-32b）
+        #     保留后网关 id 去掉日期后缀（upstream 保留原始带日期 id 供路由）
         if spec.keep_latest_only:
-            best: dict[tuple, SyncedModel] = {}
+            best: dict[str, SyncedModel] = {}
             for sm in synced:
-                key = (_ark_base_name(sm.id), sm.model_type)
-                cur = best.get(key)
+                fam = _ark_family(sm.id)
+                if fam == "qwen":
+                    # qwen 系列只留 qwen3-32b（created 最新是 14b，故按用户指定特例）
+                    if "qwen3-32b" in sm.id:
+                        best[fam] = sm
+                    continue
+                cur = best.get(fam)
                 if cur is None or (sm.created or -1) > (cur.created or -1):
-                    best[key] = sm
+                    best[fam] = sm
+            for sm in best.values():
+                sm.upstream_model = sm.id      # 原始带日期 id（路由用）
+                sm.id = _ark_base_name(sm.id)  # 网关 id 去掉日期后缀（如 doubao-seedream-5-0-pro）
             synced = list(best.values())
 
         # 2. 事务内 upsert（模型名 + 厂商 复合唯一）
@@ -392,17 +424,17 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 result.added += 1
             result.model_ids.append(sm.id)
 
-        # 2.5 keep_latest_only：移除同组旧版本（DB 中基础名匹配、但 id 不在本次保留集合）
+        # 2.5 keep_latest_only：移除同家族旧版本（DB 中家族匹配、但 id 不在本次保留集合）
         if spec.keep_latest_only:
             retained_ids = {sm.id for sm in synced}
-            retained_bases = {_ark_base_name(sm.id) for sm in synced}
+            retained_families = {_ark_family(sm.id) for sm in synced}
             db_models = (await db.execute(
                 select(Model).where(Model.vendor == spec.key)
             )).scalars().all()
             for m in db_models:
                 if m.model in retained_ids:
                     continue
-                if _ark_base_name(m.model) in retained_bases:
+                if _ark_family(m.model) in retained_families:
                     await db.delete(m)
                     result.removed += 1
 
