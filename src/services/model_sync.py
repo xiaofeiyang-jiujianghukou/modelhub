@@ -344,7 +344,30 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 if mapped:
                     sm.upstream_model = sm.id
                     sm.id = mapped
+            # keep_latest_only：每家族保留最新代表（created 最新）；
+            #     有保留特例的家族（_ARK_KEEP_BASES）按基础名各留一个最新版（如 deepseek 的 pro+flash）
+            #     保留后网关 id 去掉日期后缀（upstream 保留原始带日期 id 供路由）
+            if spec.keep_latest_only:
+                best: dict[tuple, SyncedModel] = {}
+                for sm in synced:
+                    fam = _ark_family(sm.id)
+                    base = _ark_base_name(sm.id)
+                    keep = _ARK_KEEP_BASES.get(fam)
+                    if keep is not None:
+                        if base not in keep:
+                            continue  # 该家族指定保留的基础名之外丢弃（如 qwen 只留 qwen3-32b）
+                        key = (fam, base)
+                    else:
+                        key = (fam,)  # 默认每家族只留 created 最新一个
+                    cur = best.get(key)
+                    if cur is None or (sm.created or -1) > (cur.created or -1):
+                        best[key] = sm
+                for sm in best.values():
+                    sm.upstream_model = sm.id      # 原始带日期 id（路由用）
+                    sm.id = _ark_base_name(sm.id)  # 网关 id 去掉日期后缀（如 doubao-seedream-5-0-pro）
+                synced = list(best.values())
             # api 拉取：价格/上下文优先用上游返回；上游缺失时用 model_references 表兜底
+            # （兜底必须在去重改名之后执行，否则带日期 id 查不到 clean 名参考）
             for sm in synced:
                 ref = await model_reference.reference_for(db, sm.id)
                 ref_ip = float(ref.input_price) if ref and ref.input_price is not None else None
@@ -361,29 +384,6 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 if sm.context_window is None and ref and ref.context_window is not None:
                     sm.context_window = ref.context_window
 
-        # 1.5 keep_latest_only：每家族保留最新代表（created 最新）；
-        #     有保留特例的家族（_ARK_KEEP_BASES）按基础名各留一个最新版（如 deepseek 的 pro+flash）
-        #     保留后网关 id 去掉日期后缀（upstream 保留原始带日期 id 供路由）
-        if spec.keep_latest_only:
-            best: dict[tuple, SyncedModel] = {}
-            for sm in synced:
-                fam = _ark_family(sm.id)
-                base = _ark_base_name(sm.id)
-                keep = _ARK_KEEP_BASES.get(fam)
-                if keep is not None:
-                    if base not in keep:
-                        continue  # 该家族指定保留的基础名之外丢弃（如 qwen 只留 qwen3-32b）
-                    key = (fam, base)
-                else:
-                    key = (fam,)  # 默认每家族只留 created 最新一个
-                cur = best.get(key)
-                if cur is None or (sm.created or -1) > (cur.created or -1):
-                    best[key] = sm
-            for sm in best.values():
-                sm.upstream_model = sm.id      # 原始带日期 id（路由用）
-                sm.id = _ark_base_name(sm.id)  # 网关 id 去掉日期后缀（如 doubao-seedream-5-0-pro）
-            synced = list(best.values())
-
         # 2. 事务内 upsert（模型名 + 厂商 复合唯一）
         for sm in synced:
             upstream = sm.upstream_model or sm.id
@@ -398,18 +398,20 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                     model.display_name = sm.display_name
                 if sm.context_window is not None:
                     model.context_window = sm.context_window
-                # 价格：官方价优先——已有 official 价的模型不被 default 价覆盖
-                price_conflict = (model.price_source == "official") and (sm.price_source == "default")
-                if sm.input_price is not None and not price_conflict:
-                    model.input_price = sm.input_price
-                    model.price_currency = sm.price_currency
-                    model.price_source = sm.price_source
-                if sm.output_price is not None and not price_conflict:
-                    model.output_price = sm.output_price
-                    model.price_currency = sm.price_currency
-                    model.price_source = sm.price_source
-                if not model.price_source:
-                    model.price_source = sm.price_source
+                # 价格：manual（用户手动）最高优先，同步一律不覆盖；
+                # 已有 official 官方价的模型不被 default 价覆盖
+                if model.price_source != "manual":
+                    price_conflict = (model.price_source == "official") and (sm.price_source == "default")
+                    if sm.input_price is not None and not price_conflict:
+                        model.input_price = sm.input_price
+                        model.price_currency = sm.price_currency
+                        model.price_source = sm.price_source
+                    if sm.output_price is not None and not price_conflict:
+                        model.output_price = sm.output_price
+                        model.price_currency = sm.price_currency
+                        model.price_source = sm.price_source
+                    if not model.price_source:
+                        model.price_source = sm.price_source
                 model.upstream_model = upstream
                 model.synced_from = spec.key
                 model.last_synced_at = now
