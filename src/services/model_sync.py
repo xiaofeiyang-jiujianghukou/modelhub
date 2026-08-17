@@ -398,20 +398,17 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                     model.display_name = sm.display_name
                 if sm.context_window is not None:
                     model.context_window = sm.context_window
-                # 价格：manual（用户手动）最高优先，同步一律不覆盖；
-                # 已有 official 官方价的模型不被 default 价覆盖
-                if model.price_source != "manual":
-                    price_conflict = (model.price_source == "official") and (sm.price_source == "default")
-                    if sm.input_price is not None and not price_conflict:
-                        model.input_price = sm.input_price
-                        model.price_currency = sm.price_currency
-                        model.price_source = sm.price_source
-                    if sm.output_price is not None and not price_conflict:
-                        model.output_price = sm.output_price
-                        model.price_currency = sm.price_currency
-                        model.price_source = sm.price_source
-                    if not model.price_source:
-                        model.price_source = sm.price_source
+                # 价格：一律取同步来源价（上游/官方参考兜底）；无价不覆盖（保持空/原值）
+                if sm.input_price is not None:
+                    model.input_price = sm.input_price
+                    model.price_currency = sm.price_currency
+                    model.price_source = sm.price_source
+                if sm.output_price is not None:
+                    model.output_price = sm.output_price
+                    model.price_currency = sm.price_currency
+                    model.price_source = sm.price_source
+                if not model.price_source:
+                    model.price_source = sm.price_source
                 model.upstream_model = upstream
                 model.synced_from = spec.key
                 model.last_synced_at = now
