@@ -117,7 +117,8 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     async def fake_get(url, headers, timeout, params=None):
         return {"object": "list", "data": [
             {"id": "deepseek-v4-pro-260425", "status": None, "created": 1778837387},
-            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # deepseek 家族最新
+            {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # deepseek pro 最新
+            {"id": "deepseek-v4-flash-ga-260731", "status": None, "created": 1785748879},  # deepseek flash 最新（规格保留）
             {"id": "doubao-seedream-4-0-250828", "status": None, "created": 1757244120},
             {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # seedream 家族最新
             {"id": "qwen3-8b-20250429", "status": None, "created": 1770000000},  # qwen 家族较新但非 32b
@@ -131,12 +132,17 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
 
     assert result.status == "success"
     assert result.removed == 1  # deepseek-v4-pro-260425 预置旧版被删
-    assert set(result.model_ids) == {"deepseek-v4-pro", "doubao-seedream-4-0", "qwen3-32b"}
+    assert set(result.model_ids) == {
+        "deepseek-v4-pro", "deepseek-v4-flash", "doubao-seedream-4-0", "qwen3-32b",
+    }
 
     # 去日期：网关 id 是干净名，upstream 保留带日期原始 id
-    clean = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro", Model.vendor == "ark").limit(1))).scalars().first()
-    assert clean is not None
-    assert clean.upstream_model == "deepseek-v4-pro-ga-260813"
+    pro = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro", Model.vendor == "ark").limit(1))).scalars().first()
+    assert pro is not None
+    assert pro.upstream_model == "deepseek-v4-pro-ga-260813"
+    flash = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-flash", Model.vendor == "ark").limit(1))).scalars().first()
+    assert flash is not None
+    assert flash.upstream_model == "deepseek-v4-flash-ga-260731"
     # 旧版被删
     old = (await db_session.execute(select(Model).where(Model.model == "deepseek-v4-pro-260425", Model.vendor == "ark").limit(1))).scalars().first()
     assert old is None

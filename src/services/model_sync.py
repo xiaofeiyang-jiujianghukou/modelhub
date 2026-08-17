@@ -122,6 +122,14 @@ def _ark_family(model_id: str) -> str:
     return "other"
 
 
+# 方舟家族保留特例：family → 保留的基础名集合（不同规格都留最新版）
+# 未列出的家族默认只保留 created 最新一个代表
+_ARK_KEEP_BASES: dict[str, set[str]] = {
+    "deepseek": {"deepseek-v4-pro", "deepseek-v4-flash"},  # pro(强) + flash(快) 都是主力
+    "qwen": {"qwen3-32b"},                                  # qwen 只留最强
+}
+
+
 async def _fetch_ark(spec: ProviderSpec, base_url: str, api_key: str, timeout: float) -> list[SyncedModel]:
     """方舟：OpenAI 风格 /models，但带 status 生命周期字段（Shutdown/Retiring/空）
 
@@ -353,20 +361,24 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 if sm.context_window is None and ref and ref.context_window is not None:
                     sm.context_window = ref.context_window
 
-        # 1.5 keep_latest_only：每家族只保留最新代表（created 最新；qwen 固定 qwen3-32b）
+        # 1.5 keep_latest_only：每家族保留最新代表（created 最新）；
+        #     有保留特例的家族（_ARK_KEEP_BASES）按基础名各留一个最新版（如 deepseek 的 pro+flash）
         #     保留后网关 id 去掉日期后缀（upstream 保留原始带日期 id 供路由）
         if spec.keep_latest_only:
-            best: dict[str, SyncedModel] = {}
+            best: dict[tuple, SyncedModel] = {}
             for sm in synced:
                 fam = _ark_family(sm.id)
-                if fam == "qwen":
-                    # qwen 系列只留 qwen3-32b（created 最新是 14b，故按用户指定特例）
-                    if "qwen3-32b" in sm.id:
-                        best[fam] = sm
-                    continue
-                cur = best.get(fam)
+                base = _ark_base_name(sm.id)
+                keep = _ARK_KEEP_BASES.get(fam)
+                if keep is not None:
+                    if base not in keep:
+                        continue  # 该家族指定保留的基础名之外丢弃（如 qwen 只留 qwen3-32b）
+                    key = (fam, base)
+                else:
+                    key = (fam,)  # 默认每家族只留 created 最新一个
+                cur = best.get(key)
                 if cur is None or (sm.created or -1) > (cur.created or -1):
-                    best[fam] = sm
+                    best[key] = sm
             for sm in best.values():
                 sm.upstream_model = sm.id      # 原始带日期 id（路由用）
                 sm.id = _ark_base_name(sm.id)  # 网关 id 去掉日期后缀（如 doubao-seedream-5-0-pro）
