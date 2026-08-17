@@ -91,27 +91,26 @@ async def seed(reset: bool = False) -> None:
             existing = result.scalar_one_or_none()
             if existing:
                 print(f"  ↻ {spec.key}: 已存在，跳过（不覆盖配置）")
-                continue
+            else:
+                env_key = ENV_KEY_MAP.get(spec.key)
+                api_key = os.getenv(env_key, "") if env_key else ""
+                if not api_key or len(api_key) < 8 or "xxx" in api_key.lower():
+                    api_key = ""
+                provider = Provider(
+                    name=spec.key,
+                    base_url=spec.default_base_url,
+                    auth_type=spec.auth_type,
+                    credentials_enc=encrypt_credentials({"api_key": api_key}),
+                    timeout_ms=60000,
+                    is_active=True,
+                )
+                db.add(provider)
+                await db.flush()
+                created_providers += 1
+                key_status = "✅" if api_key else "⚠️ 无 Key"
+                print(f"  ➕ {spec.key}: 已创建 ({key_status})")
 
-            env_key = ENV_KEY_MAP.get(spec.key)
-            api_key = os.getenv(env_key, "") if env_key else ""
-            if not api_key or len(api_key) < 8 or "xxx" in api_key.lower():
-                api_key = ""
-            provider = Provider(
-                name=spec.key,
-                base_url=spec.default_base_url,
-                auth_type=spec.auth_type,
-                credentials_enc=encrypt_credentials({"api_key": api_key}),
-                timeout_ms=60000,
-                is_active=True,
-            )
-            db.add(provider)
-            await db.flush()
-            created_providers += 1
-            key_status = "✅" if api_key else "⚠️ 无 Key"
-            print(f"  ➕ {spec.key}: 已创建 ({key_status})")
-
-            # ── 模型 + 路由 ensure-exists（清单来自 model_references 表）──
+            # ── 模型 ensure-exists（供应商已存在时也按参考清单补建缺失模型）──
             for ref in await model_reference.static_models_for(db, spec.key):
                 model = await db.get(Model, (ref.model_id, spec.key))
                 if model:

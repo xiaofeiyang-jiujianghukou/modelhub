@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY src/ src/
 COPY web/ web/
 COPY scripts/ scripts/
+COPY config/ config/
 
 # 环境变量（生产环境通过 docker-compose / 环境注入覆盖）
 ENV HOST=0.0.0.0
