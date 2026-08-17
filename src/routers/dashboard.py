@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.database import get_db
-from src.db.models import User, Balance
+from src.db.models import User, Balance, to_utc_timestamp
 from src.middleware.auth import get_current_user_jwt
 
 router = APIRouter(tags=["Dashboard"])
@@ -50,7 +50,7 @@ async def get_balance(
     return BalanceResponse(
         balance_usd=float(balance.amount_usd),
         currency="USD",
-        updated_at=int(balance.updated_at.timestamp()),
+        updated_at=to_utc_timestamp(balance.updated_at),
     )
 
 

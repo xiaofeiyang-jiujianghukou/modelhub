@@ -273,25 +273,51 @@ def _to_anthropic_response(
 
 # ── 流式转换（OpenAI SSE → Anthropic SSE events）────────────────────────────
 
+def _estimate_input_tokens(system, messages) -> int:
+    """估算输入 token 数（中文≈1字/token，英文≈4字符/token，粗略但够用）。
+    Claude Code 从流式 message_start 的 usage.input_tokens 读 token 数，
+    上游 DeepSeek 的 usage 在流末尾才返回，故 message_start 用此估算值。"""
+    total_chars = 0
+    if isinstance(system, str):
+        total_chars += len(system)
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                total_chars += len(block.get("text", ""))
+    for m in messages:
+        content = getattr(m, "content", m) if not isinstance(m, dict) else m.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    total_chars += len(block.get("text", ""))
+    return max(1, int(total_chars / 1.5))
+
+
 def _anthropic_stream_events(
     gen: AsyncGenerator[str, None],
     req_id: str,
     model_name: str,
+    on_finish=None,
+    input_estimate: int = 0,
 ) -> AsyncGenerator[str, None]:
-    """将 OpenAI 流式 SSE 转换为 Anthropic 流式 SSE events"""
+    """将 OpenAI 流式 SSE 转换为 Anthropic 流式 SSE events；
+    on_finish(输入token, 输出token) 在流正常结束时回调（计费/记日志）；
+    input_estimate 用于 message_start 的 usage.input_tokens（真实值流末尾才拿到）。"""
     input_tokens = 0
     output_tokens = 0
 
     async def wrapper():
         nonlocal input_tokens, output_tokens
         try:
-            # message_start
+            # message_start：input_tokens 用估算值（真实值末尾才到）
             start_msg = {
                 "type": "message_start",
                 "message": {
                     "id": req_id, "type": "message", "role": "assistant",
                     "model": model_name, "content": [],
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    "usage": {"input_tokens": input_estimate, "output_tokens": 0},
                 },
             }
             yield f"event: message_start\ndata: {json.dumps(start_msg)}\n\n"
@@ -387,11 +413,19 @@ def _anthropic_stream_events(
             delta_msg = {
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": output_tokens},
+                # 带上游真实 input_tokens（若末尾拿到）；否则回退估算值，保证 Claude Code 能显示
+                "usage": {"input_tokens": input_tokens or input_estimate, "output_tokens": output_tokens},
             }
             yield f"event: message_delta\ndata: {json.dumps(delta_msg)}\n\n"
             # message_stop
             yield "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n"
+
+            # 流正常结束 → 计费 + 记日志（token 数来自上游末尾 usage chunk）
+            if on_finish:
+                try:
+                    await on_finish(input_tokens, output_tokens)
+                except Exception as e:
+                    logger.error(f"anthropic stream on_finish failed: {e}")
         except Exception as e:
             logger.error(f"anthropic stream error: {e}")
             err = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
@@ -496,8 +530,39 @@ async def anthropic_messages(
 
         # ── 流式 ──
         if req.stream:
+            async def _on_stream_finish(pt: int, ct: int):
+                """流结束时：独立会话补扣费 + 记日志（原始会话已随请求返回关闭）"""
+                async with AsyncSessionLocal() as _db:
+                    total = pt + ct
+                    mid, _vendor = parse_model_key(model_name)
+                    model_obj = await Model.get_by_model_and_vendor(_db, mid, _vendor) if _vendor else None
+                    cost = 0.0
+                    if total > 0 and model_obj and model_obj.model_type == "llm":
+                        cost = calc_llm_cost(model_obj, pt, ct)
+                        if cost > 0:
+                            try:
+                                await billing_service.deduct(
+                                    _db, user.id, cost,
+                                    description=f"anthropic-messages {model_name} ({pt}+{ct})",
+                                    request_log_id=req_id,
+                                )
+                            except Exception as e:
+                                logger.warning("anthropic stream deduct failed: {}", e)
+                    await billing_service.record_log(
+                        _db,
+                        request_id=req_id, user_id=user.id, api_key_id=api_key.id,
+                        model=model_name, provider=provider_name, request_type="chat",
+                        status="success", status_code=200,
+                        prompt_tokens=pt, completion_tokens=ct,
+                        total_tokens=total, cost_usd=cost,
+                        latency_ms=int((time.time() - start_time) * 1000),
+                    )
+
             response = StreamingResponse(
-                _anthropic_stream_events(result, req_id, model_name),
+                _anthropic_stream_events(
+                    result, req_id, model_name, _on_stream_finish,
+                    input_estimate=_estimate_input_tokens(req.system, req.messages),
+                ),
                 media_type="text/event-stream",
             )
             response.headers["X-Gateway-Model"] = model_name

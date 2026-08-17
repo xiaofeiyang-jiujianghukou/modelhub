@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from src.config import settings
 from src.database import get_db
-from src.db.models import Model
+from src.db.models import Model, to_utc_timestamp
 from src.providers.provider_registry import get_spec
 from src.services.codex_catalog import VENDOR_LABELS
 from src.services.model_key import format_model_key, parse_model_key
@@ -40,7 +40,7 @@ def _model_to_item(model: Model, currency: Optional[str] = None) -> dict:
     item = {
         "id": format_model_key(model.model, model.vendor),
         "object": "model",
-        "created": int(model.created_at.timestamp()),
+        "created": to_utc_timestamp(model.created_at),
         "owned_by": model.owned_by or "unknown",
         "meta": {
             "type": model.model_type,

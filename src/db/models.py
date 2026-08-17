@@ -26,6 +26,20 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+def to_utc_timestamp(dt: Optional[datetime]) -> Optional[int]:
+    """把 DB 读出的 datetime 转成 UTC 时间戳（秒）。
+
+    SQLite 的 DateTime(timezone=True) 存的是 UTC，但读出是 naive（无 tzinfo），
+    直接 .timestamp() 会把它误当本地时区（+8）解释，导致时间戳少 8 小时。
+    统一在此补 UTC 时区再转换。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
 class Base(DeclarativeBase):
     pass
 

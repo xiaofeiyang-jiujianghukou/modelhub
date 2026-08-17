@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.database import get_db
 from src.middleware.auth import get_admin_user
-from src.db.models import Model, ModelReference, Provider
+from src.db.models import Model, ModelReference, Provider, to_utc_timestamp
 from src.providers.provider_registry import get_spec, list_registry_entries
 from src.services.crypto import decrypt_credentials, encrypt_credentials
 from src.services.model_sync import SyncResult, spawn_sync_task, sync_provider_models
@@ -76,10 +76,10 @@ def _to_item(provider: Provider, model_count: int) -> dict:
         "timeout_ms": provider.timeout_ms,
         "is_active": provider.is_active,
         "model_count": model_count,
-        "last_synced_at": int(provider.last_synced_at.timestamp()) if provider.last_synced_at else None,
+        "last_synced_at": to_utc_timestamp(provider.last_synced_at),
         "last_sync_status": provider.last_sync_status,
         "last_sync_error": provider.last_sync_error,
-        "created_at": int(provider.created_at.timestamp()),
+        "created_at": to_utc_timestamp(provider.created_at),
     }
 
 

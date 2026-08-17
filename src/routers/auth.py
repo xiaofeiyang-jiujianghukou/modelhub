@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.db.models import ApiKey, RequestLog, User
+from src.db.models import ApiKey, RequestLog, User, to_utc_timestamp
 from src.middleware.auth import auth_service, get_current_user_jwt, get_api_key_user
 
 router = APIRouter(tags=["Auth"])
@@ -84,8 +84,8 @@ async def list_keys(
                 "name": k.name,
                 "key_prefix": f"{k.key_prefix}...",
                 "is_active": k.is_active,
-                "last_used_at": int(k.last_used_at.timestamp()) if k.last_used_at else None,
-                "created_at": int(k.created_at.timestamp()),
+                "last_used_at": to_utc_timestamp(k.last_used_at),
+                "created_at": to_utc_timestamp(k.created_at),
             }
             for k in keys
         ],
@@ -153,7 +153,9 @@ async def list_logs(
                 "cost_usd": float(l.cost_usd) if l.cost_usd else None,
                 "latency_ms": l.latency_ms,
                 "error_code": l.error_code,
-                "created_at": int(l.created_at.timestamp()),
+                # SQLite 的 DateTime(timezone=True) 读出是 naive，存的是 UTC；
+                # 必须补上 UTC 时区再 timestamp()，否则被误当本地时区（+8）解释，少 8 小时
+                "created_at": to_utc_timestamp(l.created_at),
             }
             for l in logs
         ],

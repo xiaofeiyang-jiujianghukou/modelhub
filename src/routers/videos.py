@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.db.models import User, Model, VideoTask
+from src.db.models import User, Model, VideoTask, to_utc_timestamp
 from src.middleware.auth import get_api_key_user
 from src.middleware.billing import billing_service, calc_video_cost
 from src.services.model_key import format_model_key, parse_model_key
@@ -115,8 +115,8 @@ async def get_video_task(
     result = {
         "task_id": task.id,
         "status": task.status,
-        "created": int(task.created_at.timestamp()),
-        "completed": int(task.completed_at.timestamp()) if task.completed_at else None,
+        "created": to_utc_timestamp(task.created_at),
+        "completed": to_utc_timestamp(task.completed_at),
     }
     if task.status == "succeeded":
         result["result"] = {

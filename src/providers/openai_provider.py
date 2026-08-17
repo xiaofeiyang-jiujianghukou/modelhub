@@ -123,6 +123,9 @@ class OpenAIProvider(BaseProvider):
     ) -> AsyncGenerator[str, None]:
         """流式对话：透明代理 SSE 流（顺带累积 reasoning_content 缓存，不改 SSE 内容）"""
         body = {**payload, "model": upstream_model, "stream": True}
+        # 要求上游在流末尾返回 usage（OpenAI 兼容，DeepSeek/方舟等支持），网关据此计费
+        if "stream_options" not in body:
+            body["stream_options"] = {"include_usage": True}
         _restore_reasoning(body.get("messages", []))  # 多轮：按 tool_call_id 补回 reasoning_content
         async with self._client() as client:
             try:
