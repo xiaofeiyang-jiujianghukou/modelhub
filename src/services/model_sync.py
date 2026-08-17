@@ -122,12 +122,12 @@ def _ark_family(model_id: str) -> str:
     return "other"
 
 
-# 方舟家族保留特例：family → 保留的基础名集合（不同规格都留最新版）
+# 方舟家族保留特例：family → 保留的基础名集合（按能力高到低保留多个）
 # 未列出的家族默认只保留 created 最新一个代表
 # 注意：仅保留 Coding Plan 套餐内模型（实测），旗舰/按量模型（evolving/2-1-pro/qwen 全系）不保留
 _ARK_KEEP_BASES: dict[str, set[str]] = {
-    "deepseek": {"deepseek-v4-pro", "deepseek-v4-flash"},  # 套餐内 pro(强) + flash(快)
-    "doubao-seed": {"doubao-seed-2-1-turbo"},              # 套餐内（evolving/2-1-pro 旗舰走按量，排除）
+    "deepseek": {"deepseek-v4-pro", "deepseek-v4-flash"},        # 主力留俩：pro(强)+flash(快)
+    "doubao-seed": {"doubao-seed-2-1-turbo", "doubao-seed-2-0-pro"},  # 套餐内最强俩：2-1-turbo>2-0-pro
 }
 
 # 方舟管理的全部家族：同步时这些家族下未保留的模型一律清理（含被 exclude 排除后残留的旧模型）

@@ -124,7 +124,8 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
             {"id": "deepseek-v4-pro-260425", "status": None, "created": 1778837387},
             {"id": "deepseek-v4-pro-ga-260813", "status": None, "created": 1786682407},  # deepseek pro 最新
             {"id": "deepseek-v4-flash-ga-260731", "status": None, "created": 1785748879},  # deepseek flash 最新
-            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 1781612321},  # 套餐内
+            {"id": "doubao-seed-2-1-turbo-260628", "status": None, "created": 1781612321},  # 套餐内，2-1 最强
+            {"id": "doubao-seed-2-0-pro-260215", "status": None, "created": 1773000000},  # 套餐内，2-0 最强
             {"id": "doubao-seed-2-1-pro-260628", "status": None, "created": 1782000000},  # 旗舰，_ARK_KEEP_BASES 外丢弃
             {"id": "doubao-seedream-4-0-250828", "status": None, "created": 1757244120},
             {"id": "doubao-seedream-4-0-20260415", "status": None, "created": 1776349840},  # seedream 最新
@@ -140,7 +141,9 @@ async def test_ark_keep_latest_only_removes_old(db_session, monkeypatch):
     assert result.status == "success"
     assert result.removed == 2  # deepseek-v4-pro-260425 旧版 + qwen3-32b 残留都被删
     assert set(result.model_ids) == {
-        "deepseek-v4-pro", "deepseek-v4-flash", "doubao-seed-2-1-turbo", "doubao-seedream-4-0",
+        "deepseek-v4-pro", "deepseek-v4-flash",
+        "doubao-seed-2-1-turbo", "doubao-seed-2-0-pro",  # doubao-seed 保留俩
+        "doubao-seedream-4-0",
     }
 
     # 去日期：网关 id 是干净名，upstream 保留带日期原始 id
