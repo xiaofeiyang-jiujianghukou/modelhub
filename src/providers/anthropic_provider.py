@@ -28,6 +28,40 @@ class AnthropicProvider(BaseProvider):
             "Content-Type": "application/json",
         }
 
+    def _endpoint(self, path: str) -> str:
+        """构建 Anthropic API 端点，兼容 base_url 带/不带 /v1 后缀。
+
+        registry 默认 base_url=https://api.anthropic.com（不带 /v1），但界面可配
+        成 …/v1，此时若再拼 /v1/... 会得到 …/v1/v1/... 404。统一在此收敛。
+        """
+        base = self.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}{path}"
+        return f"{base}/v1{path}"
+
+    async def health_check(self) -> bool:
+        """健康检查：请求 Anthropic /v1/models 端点验证连通性
+
+        - 未配置 key：直接 False，不发网络请求（上游必拒，省去网络等待）
+        - 401/403：无 key 或 Key 无效 → False（避免"测试通过"假阳性）
+        - 其他 4xx：连通正常 → True；5xx/异常：False
+        - 探测用短超时（≤5s）：连通性测试不该等业务 60s 超时
+        """
+        if not self.api_key:
+            return False
+        try:
+            probe_timeout = min(self.timeout_seconds, 5.0)
+            async with httpx.AsyncClient(timeout=probe_timeout) as client:
+                resp = await client.get(
+                    self._endpoint("/models"),
+                    headers=self._headers(),
+                )
+                if resp.status_code in (401, 403):
+                    return False
+                return resp.status_code < 500
+        except Exception:
+            return False
+
     def _convert_request(self, upstream_model: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         OpenAI messages 格式 → Anthropic Messages API 格式
@@ -98,7 +132,7 @@ class AnthropicProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
                 resp = await client.post(
-                    f"{self.base_url}/v1/messages",
+                    self._endpoint("/messages"),
                     headers=self._headers(),
                     json=body,
                 )
@@ -134,7 +168,7 @@ class AnthropicProvider(BaseProvider):
             try:
                 async with client.stream(
                     "POST",
-                    f"{self.base_url}/v1/messages",
+                    self._endpoint("/messages"),
                     headers=self._headers(),
                     json=body,
                 ) as resp:

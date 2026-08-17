@@ -63,12 +63,17 @@ class OpenAIProvider(BaseProvider):
     async def health_check(self) -> bool:
         """健康检查：请求 /models 端点验证连通性
 
+        - 未配置 key：直接 False，不发网络请求（上游必拒，省去网络等待）
         - 2xx / 404（端点存在性差异）：连通正常 → True
         - 401/403：API Key 无效 → False（避免"测试通过"假阳性）
         - 其他 4xx：连通正常 → True；5xx/异常：False
+        - 探测用短超时（≤5s）：连通性测试不该等业务 60s 超时（国内直连被墙时秒回失败）
         """
+        if not self.api_key:
+            return False
         try:
-            async with self._client() as client:
+            probe_timeout = min(self.timeout_seconds, 5.0)
+            async with httpx.AsyncClient(timeout=probe_timeout, trust_env=False) as client:
                 resp = await client.get(
                     f"{self.base_url}/models",
                     headers=self._headers(),

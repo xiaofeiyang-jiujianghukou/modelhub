@@ -2,6 +2,7 @@
 build_provider 工厂测试：修复非 mock 供应商无参实例化 TypeError（health.py 曾永远 degraded）
 """
 
+import httpx
 import pytest
 
 from src.db.models import Provider
@@ -10,6 +11,17 @@ from src.providers.openai_provider import OpenAIProvider
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.gemini_provider import GeminiProvider
 from src.providers.mock_provider import MockProvider
+
+
+def _mock_anthropic_http(monkeypatch, status_code, body=None):
+    """让 AnthropicProvider 的 HTTP 请求走 MockTransport（不再打真实上游）"""
+    real_async_client = httpx.AsyncClient  # 先保存真实类，避免被替换后递归
+    transport = httpx.MockTransport(lambda req: httpx.Response(status_code, json=body or {}))
+
+    def _factory(*a, **k):
+        return real_async_client(transport=transport, *a, **k)
+
+    monkeypatch.setattr("src.providers.anthropic_provider.httpx.AsyncClient", _factory)
 
 
 @pytest.mark.asyncio
@@ -86,6 +98,53 @@ async def test_health_check_marks_degraded_not_crash(db_session, monkeypatch):
         return False
     monkeypatch.setattr(OpenAIProvider, "health_check", fake_health)
     assert await adapter.health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_anthropic_health_check_rejects_no_key(monkeypatch):
+    """Anthropic 未配置 key → health_check 直接 False，且不发任何网络请求（不再默认 True 假阳性）"""
+    calls = []
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda req: calls.append(req) or httpx.Response(401))
+
+    def _factory(*a, **k):
+        return real_async_client(transport=transport, *a, **k)
+
+    monkeypatch.setattr("src.providers.anthropic_provider.httpx.AsyncClient", _factory)
+    adapter = AnthropicProvider("https://api.anthropic.com", api_key="")
+    assert await adapter.health_check() is False
+    assert calls == []  # 无 key 直接拦截，不跑网络
+
+
+@pytest.mark.asyncio
+async def test_openai_health_check_rejects_no_key(monkeypatch):
+    """OpenAI 未配置 key → health_check 直接 False，不发网络请求（不用等 60s 超时）"""
+    calls = []
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda req: calls.append(req) or httpx.Response(401))
+
+    def _factory(*a, **k):
+        return real_async_client(transport=transport, *a, **k)
+
+    monkeypatch.setattr("src.providers.openai_provider.httpx.AsyncClient", _factory)
+    adapter = OpenAIProvider("https://api.openai.com/v1", api_key="")
+    assert await adapter.health_check() is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_anthropic_health_check_ok_with_key(monkeypatch):
+    """有 key 且上游 2xx → health_check True"""
+    _mock_anthropic_http(monkeypatch, 200, {"data": []})
+    adapter = AnthropicProvider("https://api.anthropic.com", api_key="sk-valid")
+    assert await adapter.health_check() is True
+
+
+def test_anthropic_endpoint_v1_compat():
+    """base_url 带/不带 /v1 时 _endpoint 不重复拼接（界面可配成 …/v1）"""
+    assert AnthropicProvider("https://api.anthropic.com", "")._endpoint("/messages") == "https://api.anthropic.com/v1/messages"
+    assert AnthropicProvider("https://api.anthropic.com/v1", "")._endpoint("/messages") == "https://api.anthropic.com/v1/messages"
+    assert AnthropicProvider("https://api.anthropic.com/v1/", "")._endpoint("/models") == "https://api.anthropic.com/v1/models"
 
 
 @pytest.mark.asyncio
