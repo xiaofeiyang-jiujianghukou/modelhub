@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # ── Codex 模型目录（模型变化时自动重写，Codex 启动时加载最新清单）────────
     codex_catalog_path: Optional[str] = None   # 如 /home/xxx/.codex/model-catalog.local.json
 
+    # ── 前缀缓存优化（docs/CACHE_OPTIMIZATION_DESIGN.md Layer 1）──────────────
+    prefix_cache_stabilize: bool = True        # tools 确定性排序（跨请求字节一致，最大化上游前缀缓存命中）
+    prefix_cache_key_vendors: str = "hunyuan,grok"  # 注入 prompt_cache_key 的厂商（会话级稳定 ID）
+
     # ── 健康检查 ────────────────────────────────────────────────
     health_check_interval_seconds: int = 30
     circuit_breaker_threshold: float = 0.5   # 错误率阈值

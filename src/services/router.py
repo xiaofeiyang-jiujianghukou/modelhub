@@ -21,6 +21,7 @@ from src.providers.mock_provider import MockProvider
 from src.config import settings
 from src.services.model_key import parse_model_key, format_model_key, strip_context_suffix
 from src.services.chat_tools import normalize_tool_message_order
+from src.services.prefix_cache import stabilize_payload, apply_provider_cache_optimizations
 
 
 # 统一适配器工厂（按注册表 adapter + AES-GCM 解密凭证构建）
@@ -165,6 +166,9 @@ class RouterService:
         # （assistant(tool_calls) 后必须紧跟 tool，否则 DeepSeek 等上游报 insufficient tool messages）
         # 公共方法放 chat_tools.py，这里只调用；不绑定具体供应商适配器（openai/anthropic/gemini 共用）
         payload["messages"] = normalize_tool_message_order(payload.get("messages", []))
+        # 前缀缓存稳定化：tools 确定性排序（Layer 1，docs/CACHE_OPTIMIZATION_DESIGN.md）
+        if settings.prefix_cache_stabilize:
+            stabilize_payload(payload)
 
         model_id = await self.resolve_model_id(db, model_name)
         channels, strategy = await self.get_channels(db, model_id)
@@ -192,6 +196,9 @@ class RouterService:
             adapter = build_provider(provider_obj)
             if not adapter:
                 continue
+
+            # 按厂商注入 prompt_cache_key（混元/Grok 等；先清理残留，故障转移安全）
+            apply_provider_cache_optimizations(payload, channel.vendor)
 
             try:
                 if stream:
