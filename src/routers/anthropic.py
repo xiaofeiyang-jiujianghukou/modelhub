@@ -31,6 +31,7 @@ from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
 from src.services.chat_tools import chat_tool, chat_tool_call_element, chat_tool_result
 from src.services.model_key import parse_model_key, is_reasoning_model
+from src.services.cache_usage import extract_cache_usage
 
 router = APIRouter(tags=["Anthropic"])
 
@@ -308,13 +309,14 @@ def _anthropic_stream_events(
     input_estimate: int = 0,
 ) -> AsyncGenerator[str, None]:
     """将 OpenAI 流式 SSE 转换为 Anthropic 流式 SSE events；
-    on_finish(输入token, 输出token) 在流正常结束时回调（计费/记日志）；
+    on_finish(输入token, 输出token, usage_dict) 在流正常结束时回调（计费/记日志，usage 供缓存命中解析）；
     input_estimate 用于 message_start 的 usage.input_tokens（真实值流末尾才拿到）。"""
     input_tokens = 0
     output_tokens = 0
+    usage_final: Optional[dict] = None
 
     async def wrapper():
-        nonlocal input_tokens, output_tokens
+        nonlocal input_tokens, output_tokens, usage_final
         try:
             # message_start：input_tokens 用估算值（真实值末尾才到）
             start_msg = {
@@ -401,10 +403,11 @@ def _anthropic_stream_events(
                             }
                             yield f"event: content_block_delta\ndata: {json.dumps(delta_evt)}\n\n"
 
-                    # usage 收集（部分上游在末尾 chunk 返回）
+                    # usage 收集（部分上游在末尾 chunk 返回；保留完整 dict 供缓存命中解析）
                     if chunk.get("usage"):
-                        input_tokens = chunk["usage"].get("prompt_tokens", input_tokens)
-                        output_tokens = chunk["usage"].get("completion_tokens", output_tokens)
+                        usage_final = chunk["usage"]
+                        input_tokens = usage_final.get("prompt_tokens", input_tokens)
+                        output_tokens = usage_final.get("completion_tokens", output_tokens)
 
             # 关闭所有打开的 content block（按 index 顺序）
             open_indices = ([text_block_index] if text_block_index is not None else []) \
@@ -428,7 +431,7 @@ def _anthropic_stream_events(
             # 流正常结束 → 计费 + 记日志（token 数来自上游末尾 usage chunk）
             if on_finish:
                 try:
-                    await on_finish(input_tokens, output_tokens)
+                    await on_finish(input_tokens, output_tokens, usage_final)
                 except Exception as e:
                     logger.error(f"anthropic stream on_finish failed: {e}")
         except Exception as e:
@@ -535,10 +538,11 @@ async def anthropic_messages(
 
         # ── 流式 ──
         if req.stream:
-            async def _on_stream_finish(pt: int, ct: int):
+            async def _on_stream_finish(pt: int, ct: int, usage: Optional[dict] = None):
                 """流结束时：独立会话补扣费 + 记日志（原始会话已随请求返回关闭）"""
                 async with AsyncSessionLocal() as _db:
                     total = pt + ct
+                    cache_hit, cache_miss = extract_cache_usage(usage)
                     mid, _vendor = parse_model_key(model_name)
                     model_obj = await Model.get_by_model_and_vendor(_db, mid, _vendor) if _vendor else None
                     cost = 0.0
@@ -559,7 +563,8 @@ async def anthropic_messages(
                         model=model_name, provider=provider_name, request_type="chat",
                         status="success", status_code=200,
                         prompt_tokens=pt, completion_tokens=ct,
-                        total_tokens=total, cost_usd=cost,
+                        total_tokens=total, cache_hit_tokens=cache_hit,
+                        cache_miss_tokens=cache_miss, cost_usd=cost,
                         latency_ms=int((time.time() - start_time) * 1000),
                     )
 
@@ -583,6 +588,7 @@ async def anthropic_messages(
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total = prompt_tokens + completion_tokens
+        cache_hit, cache_miss = extract_cache_usage(usage)
 
         mid, _vendor = parse_model_key(model_name)
         model_obj = await Model.get_by_model_and_vendor(db, mid, _vendor) if _vendor else None
@@ -605,7 +611,8 @@ async def anthropic_messages(
             model=model_name, provider=provider_name, request_type="chat",
             status="success", status_code=200,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-            total_tokens=total, cost_usd=cost, latency_ms=latency_ms,
+            total_tokens=total, cache_hit_tokens=cache_hit, cache_miss_tokens=cache_miss,
+            cost_usd=cost, latency_ms=latency_ms,
         )
 
         response = JSONResponse(content=anthropic_resp)

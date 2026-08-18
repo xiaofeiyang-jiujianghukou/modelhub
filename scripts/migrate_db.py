@@ -38,6 +38,10 @@ MIGRATIONS = [
     ("model_references", [
         ("price_currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
     ]),
+    ("request_logs", [
+        ("cache_hit_tokens", "INTEGER"),
+        ("cache_miss_tokens", "INTEGER"),
+    ]),
 ]
 
 

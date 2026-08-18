@@ -149,6 +149,8 @@ async def list_logs(
                 "status_code": l.status_code,
                 "prompt_tokens": l.prompt_tokens,
                 "completion_tokens": l.completion_tokens,
+                "cache_hit_tokens": l.cache_hit_tokens,
+                "cache_miss_tokens": l.cache_miss_tokens,
                 "total_tokens": l.total_tokens,
                 "cost_usd": float(l.cost_usd) if l.cost_usd else None,
                 "latency_ms": l.latency_ms,

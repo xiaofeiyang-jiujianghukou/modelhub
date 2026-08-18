@@ -20,6 +20,7 @@ from src.db.models import User, ApiKey, Model
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
 from src.services.model_key import is_reasoning_model
+from src.services.cache_usage import extract_cache_usage
 
 router = APIRouter(tags=["Chat"])
 
@@ -132,6 +133,7 @@ async def _billing_after_stream(
         prompt_tokens = (usage or {}).get("prompt_tokens", 0)
         completion_tokens = (usage or {}).get("completion_tokens", 0)
         total_tokens = (usage or {}).get("total_tokens", prompt_tokens + completion_tokens)
+        cache_hit, cache_miss = extract_cache_usage(usage)
 
         # 无 usage 时估算：按输入字符数粗略估算 prompt tokens
         estimated = False
@@ -169,6 +171,8 @@ async def _billing_after_stream(
             prompt_tokens=prompt_tokens if not estimated else None,
             completion_tokens=completion_tokens if not estimated else None,
             total_tokens=total_tokens if not estimated else None,
+            cache_hit_tokens=cache_hit,
+            cache_miss_tokens=cache_miss,
             cost_usd=cost,
             latency_ms=latency_ms,
             error_code=None if not stream_error else "upstream_error",
@@ -321,6 +325,7 @@ async def chat_completions(
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        cache_hit, cache_miss = extract_cache_usage(usage)
 
         if total_tokens > 0 and model.model_type == "llm":
             cost = calc_llm_cost(model, prompt_tokens, completion_tokens)
@@ -349,6 +354,8 @@ async def chat_completions(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cache_hit_tokens=cache_hit,
+                cache_miss_tokens=cache_miss,
                 cost_usd=cost,
                 latency_ms=latency_ms,
             )

@@ -28,6 +28,7 @@ from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
 from src.services.chat_tools import chat_tool, chat_tool_call_element, chat_tool_result
 from src.services.model_key import parse_model_key
+from src.services.cache_usage import extract_cache_usage
 
 router = APIRouter(tags=["Responses"])
 
@@ -244,12 +245,13 @@ def _responses_stream_events(
     on_finish=None,
 ) -> AsyncGenerator[str, None]:
     """将 OpenAI chat 流式 SSE 转换为 Responses API 流式 SSE events（含 function_call）；
-    on_finish(输入token, 输出token) 在流正常结束时回调（计费/记日志）"""
+    on_finish(输入token, 输出token, usage_dict) 在流正常结束时回调（计费/记日志，usage 供缓存命中解析）"""
 
     async def wrapper():
         collected_text = ""
         input_tokens = 0
         output_tokens = 0
+        usage_final: Optional[dict] = None
         text_item: Optional[dict] = None  # {output_index, item_id, content_part_id}
         tool_items: dict[int, dict] = {}  # openai_index -> {output_index, item_id, name, arguments}
         next_output_index = 0
@@ -339,10 +341,11 @@ def _responses_stream_events(
                             "delta": content,
                         }) + "\n\n"
 
-                    # usage 收集（上游末尾 chunk 返回，含 stream_options.include_usage）
+                    # usage 收集（上游末尾 chunk 返回，含 stream_options.include_usage；保留完整 dict 供缓存命中解析）
                     if chunk.get("usage"):
-                        input_tokens = chunk["usage"].get("prompt_tokens", input_tokens)
-                        output_tokens = chunk["usage"].get("completion_tokens", output_tokens)
+                        usage_final = chunk["usage"]
+                        input_tokens = usage_final.get("prompt_tokens", input_tokens)
+                        output_tokens = usage_final.get("completion_tokens", output_tokens)
 
                     # 工具调用 delta（chat tool_calls → Responses function_call）
                     for tc in delta.get("tool_calls") or []:
@@ -397,7 +400,7 @@ def _responses_stream_events(
             # 流正常结束 → 计费 + 记日志
             if on_finish:
                 try:
-                    await on_finish(input_tokens, output_tokens)
+                    await on_finish(input_tokens, output_tokens, usage_final)
                 except Exception as e:
                     logger.error(f"responses stream on_finish failed: {e}")
         except Exception as e:
@@ -483,10 +486,11 @@ async def responses_endpoint(
 
         # ── 流式 ──
         if req.stream:
-            async def _on_stream_finish(pt: int, ct: int):
+            async def _on_stream_finish(pt: int, ct: int, usage: Optional[dict] = None):
                 """流结束时：独立会话补扣费 + 记日志（原始会话已随请求返回关闭）"""
                 async with AsyncSessionLocal() as _db:
                     total = pt + ct
+                    cache_hit, cache_miss = extract_cache_usage(usage)
                     mid, _vendor = parse_model_key(model_name)
                     model_obj = await Model.get_by_model_and_vendor(_db, mid, _vendor) if _vendor else None
                     cost = 0.0
@@ -507,7 +511,8 @@ async def responses_endpoint(
                         model=model_name, provider=provider_name, request_type="chat",
                         status="success", status_code=200,
                         prompt_tokens=pt, completion_tokens=ct,
-                        total_tokens=total, cost_usd=cost,
+                        total_tokens=total, cache_hit_tokens=cache_hit,
+                        cache_miss_tokens=cache_miss, cost_usd=cost,
                         latency_ms=int((time.time() - start_time) * 1000),
                     )
 
@@ -528,6 +533,7 @@ async def responses_endpoint(
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total = prompt_tokens + completion_tokens
+        cache_hit, cache_miss = extract_cache_usage(usage)
 
         mid, _vendor = parse_model_key(model_name)
         model_obj = await Model.get_by_model_and_vendor(db, mid, _vendor) if _vendor else None
@@ -550,7 +556,8 @@ async def responses_endpoint(
             model=model_name, provider=provider_name, request_type="chat",
             status="success", status_code=200,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-            total_tokens=total, cost_usd=cost, latency_ms=latency_ms,
+            total_tokens=total, cache_hit_tokens=cache_hit, cache_miss_tokens=cache_miss,
+            cost_usd=cost, latency_ms=latency_ms,
         )
 
         response = JSONResponse(content=responses_resp)

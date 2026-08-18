@@ -148,6 +148,8 @@ class RequestLog(Base):
     prompt_tokens: Optional[int] = Column(Integer, nullable=True)
     completion_tokens: Optional[int] = Column(Integer, nullable=True)
     total_tokens: Optional[int] = Column(Integer, nullable=True)
+    cache_hit_tokens: Optional[int] = Column(Integer, nullable=True)   # 前缀缓存命中（Layer 3 监控）
+    cache_miss_tokens: Optional[int] = Column(Integer, nullable=True)  # 前缀缓存未命中
     image_count: Optional[int] = Column(Integer, nullable=True)         # 图像张数（m-3）
     video_seconds: Optional[float] = Column(Numeric(10, 3), nullable=True)  # 视频秒数（m-3）
     cost_usd: Optional[float] = Column(Numeric(12, 6), nullable=True)
