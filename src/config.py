@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     prefix_cache_stabilize: bool = True        # tools 确定性排序（跨请求字节一致，最大化上游前缀缓存命中）
     prefix_cache_key_vendors: str = "hunyuan,grok"  # 注入 prompt_cache_key 的厂商（会话级稳定 ID）
 
+    # ── 显式缓存注入（Layer 2）：Anthropic Claude cache_control ────────────────
+    # 命中省 90%（读 0.1×），但写缓存溢价 1.25×(5m)/2×(1h) —— 需 ≥2 次读才回本，
+    # 多轮对话（Claude Code 等 system 复用场景）默认划算；一次性调用可关闭。
+    anthropic_cache_control: bool = True
+    anthropic_cache_ttl: str = "5m"            # "5m"（写 1.25×）| "1h"（写 2×，需 ≥3 次读回本）
+
     # ── 健康检查 ────────────────────────────────────────────────
     health_check_interval_seconds: int = 30
     circuit_breaker_threshold: float = 0.5   # 错误率阈值
