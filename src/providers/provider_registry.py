@@ -115,9 +115,11 @@ _PROVIDER_SPECS = [
     ),
     # ── 智谱 GLM（无 /models 端点，静态清单）──────────────────────
     # 模型清单 + 价格 + 上下文见 config/model_reference.json → model_references 表
+    # base_url 用 Coding Plan 套餐端点 /api/coding/paas/v4（按量端点是 /api/paas/v4，
+    # 用错会导致 Coding Plan 账号报"余额不足或无可用资源包"——套餐资源包只在 coding 端点可见）
     ProviderSpec(
         key="glm", display_name="智谱",
-        default_base_url="https://open.bigmodel.cn/api/paas/v4",
+        default_base_url="https://open.bigmodel.cn/api/coding/paas/v4",
         model_source="static",
     ),
     # ── MiniMax（api 拉取，标准 OpenAI 结构）──────────────────────────────────
