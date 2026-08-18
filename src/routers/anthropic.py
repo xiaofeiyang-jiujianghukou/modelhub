@@ -181,6 +181,15 @@ def _anthropic_tool_choice_to_openai(tc: Optional[dict]):
     return "auto"
 
 
+_REASONING_MODEL_HINTS = ("glm-5", "deepseek-v4", "deepseek-v3", "doubao-seed", "kimi-k2", "qwen3")
+
+
+def _is_reasoning_model(model_name: str) -> bool:
+    """判断是否为 reasoning 模型（思考与正文共享 max_tokens 预算，太小会导致正文为空）"""
+    mid = model_name.split("/")[-1].lower()
+    return any(h in mid for h in _REASONING_MODEL_HINTS)
+
+
 def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
     """将 Anthropic 请求转换为 OpenAI 格式 payload"""
     messages = []
@@ -197,7 +206,12 @@ def _to_openai_payload(req: AnthropicRequest, model_name: str) -> dict:
         "stream": bool(req.stream),
     }
     if req.max_tokens is not None:
-        payload["max_tokens"] = req.max_tokens
+        mt = req.max_tokens
+        # reasoning 模型（glm-5/deepseek/doubao-seed 等）思考与正文共享 max_tokens 预算，
+        # Claude Code 传的值（如 516）太小会被思考耗尽 → 正文为空。强制抬到 4096 保证正文有空间
+        if _is_reasoning_model(model_name):
+            mt = max(mt, 4096)
+        payload["max_tokens"] = mt
     if req.temperature is not None:
         payload["temperature"] = req.temperature
     if req.top_p is not None:
