@@ -857,20 +857,54 @@ async function testChat() {
   resultEl.textContent = '调用中...';
 
   try {
-    // 用登录态 JWT 调用（网关支持 JWT 认证），无需明文 Key
+    // 流式请求（用登录态 JWT），实时显示思考(reasoning_content) + 正文(content)
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500 }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500, stream: true }),
     });
-    const data = await resp.json();
-    if (data.error) {
-      resultEl.textContent = '❌ ' + (data.error.message || JSON.stringify(data.error));
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      resultEl.textContent = '❌ ' + (err.error?.message || resp.statusText);
       return;
     }
-    const text = data.choices?.[0]?.message?.content || '(无内容返回)';
-    const usage = data.usage ? `\n\n[${data.model} · ${data.usage.total_tokens} tokens]` : '';
-    resultEl.textContent = text + usage;
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', reasoning = '', content = '', modelName = model, usageTokens = 0;
+
+    const render = () => {
+      let out = '';
+      if (reasoning) out += '💭 思考过程：\n' + reasoning + '\n\n';
+      out += '💬 回复：\n' + (content || '…');
+      if (usageTokens) out += `\n\n[${modelName} · ${usageTokens} tokens]`;
+      resultEl.textContent = out;
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop(); // 保留最后不完整行
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s.startsWith('data:')) continue;
+        const payload = s.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(payload);
+          const delta = chunk.choices?.[0]?.delta || {};
+          if (delta.reasoning_content) { reasoning += delta.reasoning_content; render(); }
+          if (delta.content) { content += delta.content; render(); }
+          if (chunk.usage) usageTokens = chunk.usage.total_tokens || 0;
+          if (chunk.model) modelName = chunk.model;
+        } catch (e) {}
+      }
+    }
+    if (!content && !reasoning) resultEl.textContent = '(无内容返回)';
+    else render();
   } catch (e) {
     resultEl.textContent = '❌ 请求失败: ' + e.message;
   }
