@@ -7,7 +7,7 @@ POST /v1/chat/completions 文本对话接口
 import json
 import time
 import uuid
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -29,7 +29,11 @@ router = APIRouter(tags=["Chat"])
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    # assistant 带 tool_calls 时 content 为 null；多模态时为 content blocks 数组
+    content: Optional[str | list[dict]] = None
+    name: Optional[str] = None                   # 函数/工具名（部分客户端发送）
+    tool_calls: Optional[list[dict]] = None      # assistant 发起的工具调用
+    tool_call_id: Optional[str] = None           # role="tool" 的结果对应哪次调用
 
 
 class ChatRequest(BaseModel):
@@ -42,6 +46,8 @@ class ChatRequest(BaseModel):
     stop: Optional[str | list[str]] = Field(default=None)
     presence_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
     frequency_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+    tools: Optional[list[dict]] = Field(default=None)   # 工具定义（Cherry Studio / OpenAI SDK 依赖）
+    tool_choice: Optional[Any] = Field(default=None)    # auto | none | required | {"type":"function",...}
 
 
 # ── 响应模型 ────────────────────────────────────────────────────────────────
@@ -72,7 +78,8 @@ def _build_payload(request: ChatRequest) -> dict:
     """将请求转换为 OpenAI 格式 payload"""
     payload = {
         "model": request.model,
-        "messages": [m.model_dump() for m in request.messages],
+        # exclude_none：不把未设置的 tool_calls/tool_call_id/name 以 null 形式发给上游
+        "messages": [m.model_dump(exclude_none=True) for m in request.messages],
         "stream": request.stream,
     }
     # 可选参数
@@ -93,6 +100,11 @@ def _build_payload(request: ChatRequest) -> dict:
         payload["presence_penalty"] = request.presence_penalty
     if request.frequency_penalty is not None:
         payload["frequency_penalty"] = request.frequency_penalty
+    # 工具定义透传（tools 排序稳定化在 router 层统一做，见 prefix_cache.stabilize_payload）
+    if request.tools:
+        payload["tools"] = request.tools
+        if request.tool_choice is not None:
+            payload["tool_choice"] = request.tool_choice
     return payload
 
 
