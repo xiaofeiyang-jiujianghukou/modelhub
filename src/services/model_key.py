@@ -46,3 +46,13 @@ def parse_model_key(model_name: str) -> tuple[str, Optional[str]]:
         mid, vendor = name.rsplit("@", 1)
         return mid, vendor
     return name, None
+
+
+# reasoning 模型关键词（思考与正文共享 max_tokens 预算，太小会导致正文为空）
+_REASONING_MODEL_HINTS = ("glm-5", "deepseek-v4", "deepseek-v3", "doubao-seed", "kimi-k2", "qwen3")
+
+
+def is_reasoning_model(model_name: str) -> bool:
+    """判断是否为 reasoning 模型（会输出 reasoning_content，需较大 max_tokens）"""
+    mid = strip_context_suffix(model_name).split("/")[-1].split("@")[0].lower()
+    return any(h in mid for h in _REASONING_MODEL_HINTS)

@@ -19,6 +19,7 @@ from src.database import get_db
 from src.db.models import User, ApiKey, Model
 from src.middleware.billing import billing_service, calc_llm_cost
 from src.services.router import router_service
+from src.services.model_key import is_reasoning_model
 
 router = APIRouter(tags=["Chat"])
 
@@ -77,7 +78,12 @@ def _build_payload(request: ChatRequest) -> dict:
     if request.temperature is not None:
         payload["temperature"] = request.temperature
     if request.max_tokens is not None:
-        payload["max_tokens"] = request.max_tokens
+        mt = request.max_tokens
+        # reasoning 模型（glm-5/deepseek/doubao-seed 等）思考与正文共享 max_tokens 预算，
+        # 测试对话传的小值（如 516）会被思考耗尽 → 正文为空。强制抬到 4096 保证"该思考思考、该输出输出"
+        if is_reasoning_model(request.model):
+            mt = max(mt, 4096)
+        payload["max_tokens"] = mt
     if request.top_p is not None:
         payload["top_p"] = request.top_p
     if request.stop is not None:
