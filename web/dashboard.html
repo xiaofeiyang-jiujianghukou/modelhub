@@ -848,16 +848,20 @@ async function loadTestData() {
     : '<option value="">（无活跃 Key，请先创建）</option>';
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
 async function testChat() {
   const model = document.getElementById('test-model').value;
   const prompt = document.getElementById('test-prompt').value;
   const resultEl = document.getElementById('test-result');
   if (!model) { resultEl.textContent = '⚠️ 没有可用模型（请检查网关模型种子）'; return; }
   if (!prompt.trim()) { resultEl.textContent = '⚠️ 请输入消息内容'; return; }
-  resultEl.textContent = '调用中...';
+  resultEl.innerHTML = '<div style="color:#9ca3af">调用中…</div>';
 
   try {
-    // 流式请求（用登录态 JWT），实时显示思考(reasoning_content) + 正文(content)
+    // 流式请求（用登录态 JWT），思考(reasoning_content) + 正文(content) 分区渲染
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
@@ -866,7 +870,7 @@ async function testChat() {
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      resultEl.textContent = '❌ ' + (err.error?.message || resp.statusText);
+      resultEl.innerHTML = '<div style="color:#e53e3e">❌ ' + escapeHtml(err.error?.message || resp.statusText) + '</div>';
       return;
     }
 
@@ -875,11 +879,25 @@ async function testChat() {
     let buf = '', reasoning = '', content = '', modelName = model, usageTokens = 0;
 
     const render = () => {
-      let out = '';
-      if (reasoning) out += '💭 思考过程：\n' + reasoning + '\n\n';
-      out += '💬 回复：\n' + (content || '…');
-      if (usageTokens) out += `\n\n[${modelName} · ${usageTokens} tokens]`;
-      resultEl.textContent = out;
+      let html = '';
+      if (reasoning) {
+        html += `<div style="background:#1a1a2e;border-left:3px solid #4b5563;padding:10px 14px;border-radius:6px;margin-bottom:14px">
+          <div style="color:#9ca3af;font-size:12px;font-weight:600;margin-bottom:6px">💭 思考过程</div>
+          <div style="color:#8b8b9e;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word">${escapeHtml(reasoning)}</div>
+        </div>`;
+      }
+      if (content) {
+        html += `<div style="padding:2px 2px">
+          <div style="color:#9ca3af;font-size:12px;font-weight:600;margin-bottom:6px">💬 回复</div>
+          <div style="color:#e5e7eb;font-size:14px;line-height:1.8;white-space:pre-wrap;word-break:break-word">${escapeHtml(content)}</div>
+        </div>`;
+      } else if (!reasoning) {
+        html += '<div style="color:#9ca3af">调用中…</div>';
+      }
+      if (usageTokens) {
+        html += `<div style="color:#6b7280;font-size:11px;margin-top:12px">${escapeHtml(modelName)} · ${usageTokens} tokens</div>`;
+      }
+      resultEl.innerHTML = html;
     };
 
     while (true) {
@@ -903,10 +921,10 @@ async function testChat() {
         } catch (e) {}
       }
     }
-    if (!content && !reasoning) resultEl.textContent = '(无内容返回)';
+    if (!content && !reasoning) resultEl.innerHTML = '<div style="color:#9ca3af">(无内容返回)</div>';
     else render();
   } catch (e) {
-    resultEl.textContent = '❌ 请求失败: ' + e.message;
+    resultEl.innerHTML = '<div style="color:#e53e3e">❌ 请求失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
