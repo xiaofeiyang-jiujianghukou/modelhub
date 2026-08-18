@@ -76,9 +76,29 @@
     background: white; border-radius: 12px; padding: 24px; width: 420px; max-width: 92vw;
     box-shadow: 0 8px 30px rgba(0,0,0,0.2);
   }
+  /* ── 测试对话（DeepSeek 风格）── */
+  .chat-box { display: flex; flex-direction: column; height: 68vh; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 16px; background: #f8f9fc; border-radius: 10px; }
+  .chat-msg { margin-bottom: 16px; display: flex; }
+  .chat-msg.user { justify-content: flex-end; }
+  .chat-msg .bubble { max-width: 86%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.75; word-break: break-word; }
+  .chat-msg.user .bubble { background: #667eea; color: #fff; border-top-right-radius: 4px; white-space: pre-wrap; }
+  .chat-msg.assistant .bubble { background: #fff; color: #1a1a2e; border: 1px solid #eef0f5; border-top-left-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .chat-msg .bubble p { margin: 0 0 10px; }
+  .chat-msg .bubble p:last-child { margin-bottom: 0; }
+  .chat-msg .bubble pre { background: #1a1a2e; color: #7df9ff; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 12px; overflow-x: auto; margin: 10px 0; line-height: 1.5; }
+  .chat-msg .bubble code { background: #f1f3f9; padding: 1px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+  .chat-msg .bubble pre code { background: none; padding: 0; }
+  .chat-msg.user .bubble code { background: rgba(255,255,255,0.22); }
+  .chat-msg .bubble ul, .chat-msg .bubble ol { padding-left: 22px; margin: 8px 0; }
+  .chat-msg .bubble h1, .chat-msg .bubble h2, .chat-msg .bubble h3, .chat-msg .bubble h4 { margin: 12px 0 8px; font-size: 15px; }
+  .chat-thinking { margin-bottom: 8px; }
+  .chat-thinking summary { cursor: pointer; color: #999; font-size: 12px; user-select: none; }
+  .chat-thinking .thinking-body { color: #888; font-size: 12px; line-height: 1.6; white-space: pre-wrap; margin-top: 6px; padding-left: 8px; border-left: 2px solid #e5e7eb; }
 </style>
 </head>
 <body>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <div class="sidebar">
   <h2>⚡ 模枢 ModelHub</h2>
   <div class="sub">多模型智能编排网关</div>
@@ -184,15 +204,18 @@
 
   <!-- Test -->
   <div id="tab-test" class="hidden">
-    <div class="card">
-      <h3>测试对话</h3>
-      <div class="flex-row">
+    <div class="card chat-box">
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <h3 style="margin:0">测试对话</h3>
         <select id="test-model" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px"></select>
         <select id="test-key" style="padding:8px;border:1px solid #ddd;border-radius:8px;font-size:14px"></select>
+        <button id="test-clear" class="btn btn-sm" style="background:#f1f3f9;color:#555" onclick="clearChat()">清空</button>
       </div>
-      <textarea id="test-prompt" rows="3" style="width:100%;margin-top:12px;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:14px" placeholder="输入消息...">用一句话介绍你自己</textarea>
-      <button class="btn btn-primary" style="margin-top:12px" onclick="testChat()">发送</button>
-      <div class="key-display" id="test-result" style="margin-top:16px;color:#ddd">等待测试...</div>
+      <div class="chat-messages" id="test-chat"></div>
+      <div style="display:flex;gap:12px;margin-top:12px;align-items:flex-end">
+        <textarea id="test-prompt" rows="2" style="flex:1;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:14px;resize:vertical" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="btn btn-primary" style="height:46px;padding:0 24px" onclick="testChat()">发送</button>
+      </div>
     </div>
   </div>
 
@@ -852,60 +875,100 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
+// ── 测试对话（多轮 + markdown 渲染 + 思考折叠）──
+let CHAT_HISTORY = [];  // OpenAI messages 格式的历史对话
+
+function clearChat() {
+  CHAT_HISTORY = [];
+  document.getElementById('test-chat').innerHTML = '';
+}
+
+function renderMarkdown(text) {
+  // marked.js 渲染 markdown（CDN 加载失败则降级为纯文本）
+  if (typeof marked !== 'undefined') {
+    try { return marked.parse(text); } catch (e) {}
+  }
+  return '<div style="white-space:pre-wrap">' + escapeHtml(text) + '</div>';
+}
+
+function scrollChat() {
+  const el = document.getElementById('test-chat');
+  el.scrollTop = el.scrollHeight;
+}
+
+function addUserBubble(text) {
+  const chat = document.getElementById('test-chat');
+  const div = document.createElement('div');
+  div.className = 'chat-msg user';
+  div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+  chat.appendChild(div);
+  scrollChat();
+}
+
+function addAssistantBubble() {
+  const chat = document.getElementById('test-chat');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+  div.innerHTML = '<div class="bubble"><span style="color:#999">…</span></div>';
+  chat.appendChild(div);
+  scrollChat();
+  return div.querySelector('.bubble');
+}
+
 async function testChat() {
   const model = document.getElementById('test-model').value;
-  const prompt = document.getElementById('test-prompt').value;
-  const resultEl = document.getElementById('test-result');
-  if (!model) { resultEl.textContent = '⚠️ 没有可用模型（请检查网关模型种子）'; return; }
-  if (!prompt.trim()) { resultEl.textContent = '⚠️ 请输入消息内容'; return; }
-  resultEl.innerHTML = '<div style="color:#9ca3af">调用中…</div>';
+  const prompt = document.getElementById('test-prompt').value.trim();
+  if (!model) { alert('⚠️ 没有可用模型'); return; }
+  if (!prompt) return;
+
+  document.getElementById('test-prompt').value = '';
+  CHAT_HISTORY.push({ role: 'user', content: prompt });
+  addUserBubble(prompt);
+
+  const bubble = addAssistantBubble();
+  let reasoning = '', content = '', modelName = model, usageTokens = 0;
+  let thinkingHtml = '', thinkingLocked = false;
+
+  const renderBubble = () => {
+    // 思考块：思考中实时展开；正文开始后折叠（只渲染一次，避免用户展开后被重置）
+    if (reasoning && !thinkingLocked) {
+      if (content) {
+        thinkingHtml = `<details class="chat-thinking"><summary>💭 已深度思考（${reasoning.length} 字）</summary><div class="thinking-body">${escapeHtml(reasoning)}</div></details>`;
+        thinkingLocked = true;
+      } else {
+        thinkingHtml = `<details class="chat-thinking" open><summary>💭 思考中…（${reasoning.length} 字）</summary><div class="thinking-body">${escapeHtml(reasoning)}</div></details>`;
+      }
+    }
+    let html = thinkingHtml;
+    html += content ? renderMarkdown(content) : '<span style="color:#999">…</span>';
+    if (usageTokens) html += `<div style="color:#bbb;font-size:11px;margin-top:8px">${escapeHtml(modelName)} · ${usageTokens} tokens</div>`;
+    bubble.innerHTML = html;
+    scrollChat();
+  };
 
   try {
-    // 流式请求（用登录态 JWT），思考(reasoning_content) + 正文(content) 分区渲染
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500, stream: true }),
+      body: JSON.stringify({ model, messages: CHAT_HISTORY, max_tokens: 500, stream: true }),
     });
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
-      resultEl.innerHTML = '<div style="color:#e53e3e">❌ ' + escapeHtml(err.error?.message || resp.statusText) + '</div>';
+      bubble.innerHTML = `<span style="color:#e53e3e">❌ ${escapeHtml(err.error?.message || resp.statusText)}</span>`;
+      CHAT_HISTORY.pop();
       return;
     }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buf = '', reasoning = '', content = '', modelName = model, usageTokens = 0;
-
-    const render = () => {
-      let html = '';
-      if (reasoning) {
-        html += `<div style="background:#1a1a2e;border-left:3px solid #4b5563;padding:10px 14px;border-radius:6px;margin-bottom:14px">
-          <div style="color:#9ca3af;font-size:12px;font-weight:600;margin-bottom:6px">💭 思考过程</div>
-          <div style="color:#8b8b9e;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word">${escapeHtml(reasoning)}</div>
-        </div>`;
-      }
-      if (content) {
-        html += `<div style="padding:2px 2px">
-          <div style="color:#9ca3af;font-size:12px;font-weight:600;margin-bottom:6px">💬 回复</div>
-          <div style="color:#e5e7eb;font-size:14px;line-height:1.8;white-space:pre-wrap;word-break:break-word">${escapeHtml(content)}</div>
-        </div>`;
-      } else if (!reasoning) {
-        html += '<div style="color:#9ca3af">调用中…</div>';
-      }
-      if (usageTokens) {
-        html += `<div style="color:#6b7280;font-size:11px;margin-top:12px">${escapeHtml(modelName)} · ${usageTokens} tokens</div>`;
-      }
-      resultEl.innerHTML = html;
-    };
-
+    let buf = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split('\n');
-      buf = lines.pop(); // 保留最后不完整行
+      buf = lines.pop();
       for (const line of lines) {
         const s = line.trim();
         if (!s.startsWith('data:')) continue;
@@ -914,19 +977,30 @@ async function testChat() {
         try {
           const chunk = JSON.parse(payload);
           const delta = chunk.choices?.[0]?.delta || {};
-          if (delta.reasoning_content) { reasoning += delta.reasoning_content; render(); }
-          if (delta.content) { content += delta.content; render(); }
+          if (delta.reasoning_content) { reasoning += delta.reasoning_content; renderBubble(); }
+          if (delta.content) { content += delta.content; renderBubble(); }
           if (chunk.usage) usageTokens = chunk.usage.total_tokens || 0;
           if (chunk.model) modelName = chunk.model;
         } catch (e) {}
       }
     }
-    if (!content && !reasoning) resultEl.innerHTML = '<div style="color:#9ca3af">(无内容返回)</div>';
-    else render();
+    if (!content && !reasoning) {
+      bubble.innerHTML = '<span style="color:#999">(无内容返回)</span>';
+      CHAT_HISTORY.pop();
+    } else {
+      renderBubble();
+      CHAT_HISTORY.push({ role: 'assistant', content: content || '（思考完成，无正文）' });
+    }
   } catch (e) {
-    resultEl.innerHTML = '<div style="color:#e53e3e">❌ 请求失败: ' + escapeHtml(e.message) + '</div>';
+    bubble.innerHTML = `<span style="color:#e53e3e">❌ 请求失败: ${escapeHtml(e.message)}</span>`;
+    CHAT_HISTORY.pop();
   }
 }
+
+// Enter 发送，Shift+Enter 换行
+document.getElementById('test-prompt').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); testChat(); }
+});
 
 async function logout() {
   localStorage.removeItem('gateway_token');
