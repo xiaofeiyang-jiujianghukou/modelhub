@@ -38,6 +38,7 @@
 </style>
 </head>
 <body>
+<button data-lang-toggle onclick="I18N.toggle()" style="position:fixed;top:16px;right:16px;z-index:10;background:rgba(255,255,255,0.95);border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:600;color:#667eea;box-shadow:0 2px 8px rgba(0,0,0,0.15)">EN</button>
 <div class="card">
   <h1>⚡ 模枢 ModelHub</h1>
   <p class="subtitle">多模型智能编排网关控制台</p>
@@ -105,7 +106,7 @@ async function doLogin() {
     localStorage.setItem('gateway_token', data.access_token);
     location.href = nextTarget();
   } else {
-    errEl.textContent = (data.error && data.error.message) || '登录失败';
+    errEl.textContent = (data.error && data.error.message) || I18N.t('登录失败');
   }
 }
 
@@ -117,13 +118,14 @@ async function doRegister() {
   errEl.textContent = '';
   const data = await api('/auth/register', 'POST', { email, password, display_name: name });
   if (data.message) {
-    alert('注册成功！请登录');
+    alert(I18N.t('注册成功！请登录'));
     switchTab('login');
     document.getElementById('login-email').value = email;
   } else {
-    errEl.textContent = (data.error && data.error.message) || '注册失败';
+    errEl.textContent = (data.error && data.error.message) || I18N.t('注册失败');
   }
 }
 </script>
+<script src="i18n.js"></script>
 </body>
 </html>
