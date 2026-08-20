@@ -166,6 +166,12 @@ def _convert_usage(usage: dict[str, Any]) -> dict[str, Any]:
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude 系列模型适配器"""
 
+    def __init__(self, base_url: str, api_key: str, timeout_seconds: float = 30.0):
+        super().__init__(base_url, api_key, timeout_seconds)
+        # 持久连接池：跨请求复用 TCP/TLS。trust_env=False 忽略系统代理
+        # （用户多用智谱 anthropic 兼容端点，直连即可；且系统 socks:// 代理 httpx 不认会报错）
+        self._http = httpx.AsyncClient(timeout=timeout_seconds, trust_env=False)
+
     @property
     def name(self) -> str:
         return "anthropic"
@@ -200,14 +206,14 @@ class AnthropicProvider(BaseProvider):
             return False
         try:
             probe_timeout = min(self.timeout_seconds, 5.0)
-            async with httpx.AsyncClient(timeout=probe_timeout) as client:
-                resp = await client.get(
-                    self._endpoint("/models"),
-                    headers=self._headers(),
-                )
-                if resp.status_code in (401, 403):
-                    return False
-                return resp.status_code < 500
+            resp = await self._http.get(
+                self._endpoint("/models"),
+                headers=self._headers(),
+                timeout=probe_timeout,
+            )
+            if resp.status_code in (401, 403):
+                return False
+            return resp.status_code < 500
         except Exception:
             return False
 
@@ -331,26 +337,25 @@ class AnthropicProvider(BaseProvider):
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         body = self._convert_request(upstream_model, payload)
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        try:
+            resp = await self._http.post(
+                self._endpoint("/messages"),
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return self._convert_response(resp.json(), payload.get("model", upstream_model))
+        except httpx.HTTPStatusError as exc:
+            logger.warning("anthropic upstream error status={}", exc.response.status_code)
             try:
-                resp = await client.post(
-                    self._endpoint("/messages"),
-                    headers=self._headers(),
-                    json=body,
-                )
-                resp.raise_for_status()
-                return self._convert_response(resp.json(), payload.get("model", upstream_model))
-            except httpx.HTTPStatusError as exc:
-                logger.warning("anthropic upstream error status={}", exc.response.status_code)
-                try:
-                    detail = exc.response.json()
-                    msg = detail.get("error", {}).get("message", exc.response.text)
-                except Exception:
-                    msg = exc.response.text
-                return self._openai_error(msg, "api_error", "upstream_error", exc.response.status_code)
-            except Exception as exc:
-                logger.error("anthropic request failed: {}", exc)
-                return self._openai_error(str(exc), "api_error", "upstream_error", 500)
+                detail = exc.response.json()
+                msg = detail.get("error", {}).get("message", exc.response.text)
+            except Exception:
+                msg = exc.response.text
+            return self._openai_error(msg, "api_error", "upstream_error", exc.response.status_code)
+        except Exception as exc:
+            logger.error("anthropic request failed: {}", exc)
+            return self._openai_error(str(exc), "api_error", "upstream_error", 500)
 
     async def chat_completions_stream(
         self,
@@ -371,50 +376,87 @@ class AnthropicProvider(BaseProvider):
         tool_index_map: dict[Any, int] = {}   # Anthropic content block index → OpenAI tool_calls index
         stop_reason: str = "end_turn"
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            try:
-                async with client.stream(
-                    "POST",
-                    self._endpoint("/messages"),
-                    headers=self._headers(),
-                    json=body,
-                ) as resp:
-                    resp.raise_for_status()
-                    async for raw_line in resp.aiter_lines():
-                        if not raw_line.startswith("data:"):
-                            continue
-                        data_str = raw_line[5:].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+        try:
+            async with self._http.stream(
+                "POST",
+                self._endpoint("/messages"),
+                headers=self._headers(),
+                json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for raw_line in resp.aiter_lines():
+                    if not raw_line.startswith("data:"):
+                        continue
+                    data_str = raw_line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
 
-                        etype = event.get("type", "")
+                    etype = event.get("type", "")
 
-                        # usage 累积：Anthropic 把 input/缓存字段放在 message_start，
-                        # 最终 output_tokens 放在 message_delta（末尾 chunk 统一输出）
-                        if etype == "message_start":
-                            started = (event.get("message") or {}).get("usage") or {}
-                            if started:
-                                usage_acc.update(started)
-                        elif etype == "message_delta":
-                            delta_usage = event.get("usage") or {}
-                            if delta_usage:
-                                usage_acc.update(delta_usage)
-                            # stop_reason=tool_use 时最终 finish_reason 要报 tool_calls
-                            sr = (event.get("delta") or {}).get("stop_reason")
-                            if sr:
-                                stop_reason = sr
+                    # usage 累积：Anthropic 把 input/缓存字段放在 message_start，
+                    # 最终 output_tokens 放在 message_delta（末尾 chunk 统一输出）
+                    if etype == "message_start":
+                        started = (event.get("message") or {}).get("usage") or {}
+                        if started:
+                            usage_acc.update(started)
+                    elif etype == "message_delta":
+                        delta_usage = event.get("usage") or {}
+                        if delta_usage:
+                            usage_acc.update(delta_usage)
+                        # stop_reason=tool_use 时最终 finish_reason 要报 tool_calls
+                        sr = (event.get("delta") or {}).get("stop_reason")
+                        if sr:
+                            stop_reason = sr
 
-                        # 工具调用流式：content_block_start(tool_use) 起头，
-                        # 随后 input_json_delta 增量吐 arguments（转 OpenAI tool_calls delta）
-                        if etype == "content_block_start":
-                            cb = event.get("content_block") or {}
-                            if cb.get("type") == "tool_use":
-                                tc_index = len(tool_index_map)
-                                tool_index_map[event.get("index")] = tc_index
+                    # 工具调用流式：content_block_start(tool_use) 起头，
+                    # 随后 input_json_delta 增量吐 arguments（转 OpenAI tool_calls delta）
+                    if etype == "content_block_start":
+                        cb = event.get("content_block") or {}
+                        if cb.get("type") == "tool_use":
+                            tc_index = len(tool_index_map)
+                            tool_index_map[event.get("index")] = tc_index
+                            chunk = {
+                                "id": chat_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": request_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"tool_calls": [{
+                                        "index": tc_index,
+                                        "id": cb.get("id") or f"call_{uuid.uuid4().hex[:16]}",
+                                        "type": "function",
+                                        "function": {"name": cb.get("name", ""), "arguments": ""},
+                                    }]},
+                                    "finish_reason": None,
+                                }],
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+
+                    if etype == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        delta_text = delta.get("text", "")
+                        if delta_text:
+                            chunk = {
+                                "id": chat_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": request_model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": delta_text},
+                                    "finish_reason": None,
+                                }],
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                        elif delta.get("type") == "input_json_delta":
+                            tc_index = tool_index_map.get(event.get("index"))
+                            partial = delta.get("partial_json", "")
+                            if tc_index is not None and partial:
                                 chunk = {
                                     "id": chat_id,
                                     "object": "chat.completion.chunk",
@@ -424,87 +466,49 @@ class AnthropicProvider(BaseProvider):
                                         "index": 0,
                                         "delta": {"tool_calls": [{
                                             "index": tc_index,
-                                            "id": cb.get("id") or f"call_{uuid.uuid4().hex[:16]}",
-                                            "type": "function",
-                                            "function": {"name": cb.get("name", ""), "arguments": ""},
+                                            "function": {"arguments": partial},
                                         }]},
                                         "finish_reason": None,
                                     }],
                                 }
                                 yield f"data: {json.dumps(chunk)}\n\n"
 
-                        if etype == "content_block_delta":
-                            delta = event.get("delta") or {}
-                            delta_text = delta.get("text", "")
-                            if delta_text:
-                                chunk = {
-                                    "id": chat_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": request_model,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"content": delta_text},
-                                        "finish_reason": None,
-                                    }],
-                                }
-                                yield f"data: {json.dumps(chunk)}\n\n"
-                            elif delta.get("type") == "input_json_delta":
-                                tc_index = tool_index_map.get(event.get("index"))
-                                partial = delta.get("partial_json", "")
-                                if tc_index is not None and partial:
-                                    chunk = {
-                                        "id": chat_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": created,
-                                        "model": request_model,
-                                        "choices": [{
-                                            "index": 0,
-                                            "delta": {"tool_calls": [{
-                                                "index": tc_index,
-                                                "function": {"arguments": partial},
-                                            }]},
-                                            "finish_reason": None,
-                                        }],
-                                    }
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-
-                        elif etype == "message_stop":
-                            chunk = {
+                    elif etype == "message_stop":
+                        chunk = {
+                            "id": chat_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": request_model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": _FINISH_REASON_MAP.get(stop_reason, "stop"),
+                            }],
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        # 末尾 usage chunk（OpenAI include_usage 风格）：
+                        # 网关据此流后计费 + 解析缓存命中（Layer 3）
+                        if usage_acc:
+                            usage_chunk = {
                                 "id": chat_id,
                                 "object": "chat.completion.chunk",
                                 "created": created,
                                 "model": request_model,
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {},
-                                    "finish_reason": _FINISH_REASON_MAP.get(stop_reason, "stop"),
-                                }],
+                                "choices": [],
+                                "usage": _convert_usage(usage_acc),
                             }
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                            # 末尾 usage chunk（OpenAI include_usage 风格）：
-                            # 网关据此流后计费 + 解析缓存命中（Layer 3）
-                            if usage_acc:
-                                usage_chunk = {
-                                    "id": chat_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": request_model,
-                                    "choices": [],
-                                    "usage": _convert_usage(usage_acc),
-                                }
-                                yield f"data: {json.dumps(usage_chunk)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
+                            yield f"data: {json.dumps(usage_chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
 
-            except httpx.HTTPStatusError as exc:
-                logger.warning("anthropic stream error status=", exc.response.status_code)
-                err = json.dumps({"error": {"message": "Upstream error", "type": "api_error", "code": "upstream_error"}})
-                yield f"data: {err}\n\ndata: [DONE]\n\n"
-            except Exception as exc:
-                logger.error("anthropic stream failed: {}", exc)
-                err = json.dumps({"error": {"message": str(exc), "type": "api_error", "code": "upstream_error"}})
-                yield f"data: {err}\n\ndata: [DONE]\n\n"
+        except httpx.HTTPStatusError as exc:
+            logger.warning("anthropic stream error status=", exc.response.status_code)
+            err = json.dumps({"error": {"message": "Upstream error", "type": "api_error", "code": "upstream_error"}})
+            yield f"data: {err}\n\ndata: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("anthropic stream failed: {}", exc)
+            err = json.dumps({"error": {"message": str(exc), "type": "api_error", "code": "upstream_error"}})
+            yield f"data: {err}\n\ndata: [DONE]\n\n"
 
     async def image_generations(
         self,

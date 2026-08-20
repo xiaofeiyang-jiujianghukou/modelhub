@@ -208,6 +208,7 @@ async def _stream_chat(
     start_time = time.time()
     usage: Optional[dict] = None
     stream_error = False
+    chunk_count = 0  # 用于中断时估算
 
     try:
         async for line in gen:
@@ -217,6 +218,11 @@ async def _stream_chat(
                     chunk = json.loads(line[6:].strip())
                     if isinstance(chunk, dict) and chunk.get("usage"):
                         usage = chunk["usage"]
+                    # 统计实际内容 chunk（用于中断估算）
+                    if chunk.get("choices") and len(chunk["choices"]) > 0:
+                        delta = chunk["choices"][0].get("delta", {})
+                        if delta.get("content") or delta.get("tool_calls"):
+                            chunk_count += 1
                 except Exception:
                     pass
             yield line
@@ -233,12 +239,24 @@ async def _stream_chat(
         }
         yield f"data: {json.dumps(error_data)}\n\n"
     finally:
-        # 流结束后（含中断）执行计费与日志，独立 session
+        # 流结束后计费：在生成器 finally 块同步 await，StreamingResponse
+        # 关闭生成器时会等待此处完成，确保计费落库（不丢账）。
+        # 注意：不要改用 asyncio.create_task 不保存引用——CPython 会 GC
+        # 掉无引用的后台任务，反而导致计费丢失。
         latency_ms = int((time.time() - start_time) * 1000)
+        # 流中断且上游未给 usage 时按已生成 chunk 数估算（粗略：每 chunk ~20 tokens），
+        # 避免客户端中断时零计费
+        bill_usage = usage
+        if not bill_usage and stream_error and chunk_count > 0:
+            bill_usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": chunk_count * 20,
+                "total_tokens": chunk_count * 20,
+            }
         async with AsyncSessionLocal() as db:
             await _billing_after_stream(
                 db, req_id, user, api_key, model, model_name,
-                provider_name, usage, latency_ms, stream_error,
+                provider_name, bill_usage, latency_ms, stream_error,
             )
 
 

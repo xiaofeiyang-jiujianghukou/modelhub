@@ -4,7 +4,8 @@
 """
 
 import abc
-from typing import Any, AsyncGenerator
+import httpx
+from typing import Any, AsyncGenerator, Optional
 
 
 class BaseProvider(abc.ABC):
@@ -21,6 +22,16 @@ class BaseProvider(abc.ABC):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
+        # 持久连接池：由子类 __init__ 用本模块 httpx 创建（这样测试 monkeypatch
+        # 子类模块的 httpx.AsyncClient 才能生效）。build_provider 缓存 adapter
+        # 后，跨请求复用 TCP/TLS，避免每次握手
+        self._http: Optional[httpx.AsyncClient] = None
+
+    async def aclose(self) -> None:
+        """关闭持久连接池（应用 shutdown 或 provider 配置变更时调用）"""
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     @property
     @abc.abstractmethod

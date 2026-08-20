@@ -166,7 +166,15 @@ async def get_api_key_user(
     # 查缓存
     cached = _cache_get(key_hash)
     if cached:
-        return cached["user_id"], cached["api_key_id"]
+        # 缓存命中，从数据库加载完整对象（避免缓存 ORM 对象导致会话问题）
+        user = await db.get(User, cached["user_id"])
+        api_key_obj = await db.get(ApiKey, cached["api_key_id"])
+        if user and api_key_obj and user.is_active and api_key_obj.is_active:
+            # 异步更新 last_used_at（不阻塞响应）
+            api_key_obj.last_used_at = datetime.now(timezone.utc)
+            await db.commit()
+            return user, api_key_obj
+        # 缓存数据已失效，继续查数据库
 
     # 查数据库
     result = await db.execute(
@@ -377,50 +385,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.api_key_id = _jwt_key.id
             return await call_next(request)
 
-        # 查询数据库验证 API Key
-        # 动态导入：便于测试时 monkeypatch 为测试库
+        # 复用缓存层认证逻辑
         from src.database import AsyncSessionLocal as _SessionLocal
-        from src.db.models import ApiKey, User
-        from sqlalchemy import select
-        import hashlib
-
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        key_prefix = token[:8]
 
         async with _SessionLocal() as db:
-            # 查询 API Key
-            result = await db.execute(
-                select(ApiKey, User)
-                .join(User, ApiKey.user_id == User.id)
-                .where(ApiKey.key_prefix == key_prefix)
-                .where(ApiKey.key_hash == token_hash)
-                .where(ApiKey.is_active == True)
-                .where(User.is_active == True)
-            )
-            row = result.one_or_none()
-
-            if not row:
+            try:
+                user, api_key = await get_api_key_user(request, db)
+            except HTTPException as e:
+                # 转换为 JSONResponse（中间件不能抛 HTTPException）
                 return JSONResponse(
-                    status_code=401,
-                    content={
-                        "error": {
-                            "message": "Invalid API key",
-                            "type": "authentication_error",
-                            "code": "invalid_api_key",
-                        }
-                    },
+                    status_code=e.status_code,
+                    content=e.detail,
                 )
-
-            api_key, user = row
 
             # 设置到 request.state
             request.state.user = user
             request.state.api_key = api_key
             request.state.user_id = user.id
-            request.state.key_prefix = key_prefix
-
-            # 更新最后使用时间
-            api_key.last_used_at = datetime.now(timezone.utc)
-            await db.commit()
+            request.state.key_prefix = token[:8]
 
         return await call_next(request)

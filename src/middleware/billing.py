@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Balance, Model, RequestLog, Transaction
@@ -124,42 +124,45 @@ class BillingService:
         request_log_id: Optional[str] = None,
     ) -> float:
         """
-        原子扣减余额（SELECT FOR UPDATE 防并发超扣）
-        返回扣减后余额；余额不足时抛 402
+        原子扣减余额，返回扣减后余额；余额不足时抛 402。
+
+        用条件 UPDATE 实现乐观锁：WHERE amount>=cost 保证只有余额充足时才扣，
+        rowcount=0 表示余额不足或无记录。这避免 read-then-write 竞态：
+        SQLite 无 SELECT FOR UPDATE，两并发请求读到同旧值会算出同结果 -> 少扣。
         """
         if cost_usd <= 0:
             return 0.0
 
-        # PostgreSQL 用 SELECT FOR UPDATE；SQLite 不支持，用普通锁
-        try:
-            result = await db.execute(
-                select(Balance).where(Balance.user_id == user_id).with_for_update()
-            )
-        except Exception:
-            # SQLite 不支持 with_for_update，fallback 到普通查询
-            result = await db.execute(
-                select(Balance).where(Balance.user_id == user_id)
-            )
-
-        balance_row = result.scalar_one_or_none()
-        if not balance_row:
-            raise HTTPException(
-                status_code=402,
-                detail={"error": {"message": "Balance record not found", "type": "billing_error", "code": "insufficient_balance"}},
-            )
-
-        current = float(balance_row.amount_usd)
-        if current < cost_usd:
+        now = datetime.now(timezone.utc)
+        # 原子扣减：单条 UPDATE 在 SQLite/PG 上都保证原子，WHERE 子句防超扣
+        # synchronize_session=False：amount_usd 是 Numeric(Decimal)，ORM 的 Python 端
+        # evaluator 算 Decimal-float 会抛 TypeError；交由 SQL 层处理（SQLite 隐式转换）
+        stmt = (
+            update(Balance)
+            .where(Balance.user_id == user_id)
+            .where(Balance.amount_usd >= cost_usd)
+            .values(amount_usd=Balance.amount_usd - cost_usd, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        result = await db.execute(stmt)
+        if result.rowcount == 0:
+            # 失败路径才多查一次，区分"无记录"与"余额不足"给出准确消息
+            existing = await db.get(Balance, user_id)
+            if not existing:
+                raise HTTPException(
+                    status_code=402,
+                    detail={"error": {"message": "Balance record not found", "type": "billing_error", "code": "insufficient_balance"}},
+                )
             raise HTTPException(
                 status_code=402,
                 detail={"error": {"message": "Insufficient balance", "type": "billing_error", "code": "insufficient_balance"}},
             )
 
-        new_balance = current - cost_usd
-        balance_row.amount_usd = new_balance
-        balance_row.updated_at = datetime.now(timezone.utc)
+        # 查回扣减后余额写交易记录（expire 确保拿到 UPDATE 后的 DB 真值）
+        balance_row = await db.get(Balance, user_id)
+        await db.refresh(balance_row)
+        new_balance = float(balance_row.amount_usd)
 
-        # 写交易记录
         txn = Transaction(
             user_id=user_id,
             type="usage",
@@ -171,7 +174,6 @@ class BillingService:
         db.add(txn)
         await db.commit()
 
-        # 刷新缓存
         _balance_cache_set(user_id, new_balance)
         logger.debug("deducted user={} cost={:.6f} new_balance={:.6f}", user_id, cost_usd, new_balance)
         return new_balance
@@ -183,24 +185,25 @@ class BillingService:
         amount_usd: float,
         stripe_payment_id: Optional[str] = None,
     ) -> float:
-        """充值余额"""
-        try:
-            result = await db.execute(
-                select(Balance).where(Balance.user_id == user_id).with_for_update()
-            )
-        except Exception:
-            result = await db.execute(
-                select(Balance).where(Balance.user_id == user_id)
-            )
-        balance_row = result.scalar_one_or_none()
+        """充值余额（原子加款，防并发充值少充）"""
+        # get-or-create 余额记录
+        balance_row = await db.get(Balance, user_id)
         if not balance_row:
             balance_row = Balance(user_id=user_id, amount_usd=0.0)
             db.add(balance_row)
             await db.flush()
 
-        new_balance = float(balance_row.amount_usd) + amount_usd
-        balance_row.amount_usd = new_balance
-        balance_row.updated_at = datetime.now(timezone.utc)
+        # 原子加款：UPDATE amount=amount+topup，避免两请求读到同旧值少充
+        now = datetime.now(timezone.utc)
+        stmt = (
+            update(Balance)
+            .where(Balance.user_id == user_id)
+            .values(amount_usd=Balance.amount_usd + amount_usd, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        await db.execute(stmt)
+        await db.refresh(balance_row)
+        new_balance = float(balance_row.amount_usd)
 
         txn = Transaction(
             user_id=user_id,
