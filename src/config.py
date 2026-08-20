@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     """网关配置，所有字段均可通过环境变量覆盖"""
 
     # ── 基础服务配置 ──────────────────────────────────────────
-    app_name: str = "模枢 ModelHub - Multi-Model Gateway"
+    app_name: str = "模枢 ModelHub"
     app_version: str = "1.0.0"
     debug: bool = False
     host: str = "0.0.0.0"

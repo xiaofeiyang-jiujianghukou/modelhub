@@ -74,7 +74,7 @@ _PROVIDER_SPECS = [
     # 并按 id 识别 model_type（seedream→image / seedance→video / 其余→llm）
     ProviderSpec(
         key="ark", display_name="方舟",
-        default_base_url="https://ark.cn-beijing.volces.com/api/coding/v1",
+        default_base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
         model_source="api",
         models_parser="ark",
         exclude_patterns=("embedding", "hyper3d", "hitem3d", "seed3d", "smart-router", "seed-translation", "qwen"),

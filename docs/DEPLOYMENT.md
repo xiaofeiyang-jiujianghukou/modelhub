@@ -219,19 +219,19 @@ REDIS_URL=redis://localhost:6379/0
 
 ### 使用 systemd
 
-创建 `/etc/systemd/system/multi-model-gateway.service`：
+创建 `/etc/systemd/system/modelhub.service`：
 
 ```ini
 [Unit]
-Description=Multi-Model Intelligent Orchestration Gateway
+Description=ModelHub 多模型智能编排网关
 After=network.target
 
 [Service]
 Type=exec
 User=www-data
-WorkingDirectory=/opt/multi-model-gateway
-Environment="PATH=/opt/multi-model-gateway/venv/bin"
-ExecStart=/opt/multi-model-gateway/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
+WorkingDirectory=/opt/modelhub
+Environment="PATH=/opt/modelhub/venv/bin"
+ExecStart=/opt/modelhub/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
 Restart=always
 
 [Install]
@@ -240,8 +240,8 @@ WantedBy=multi-user.target
 
 启用服务：
 ```bash
-sudo systemctl enable multi-model-gateway
-sudo systemctl start multi-model-gateway
+sudo systemctl enable modelhub
+sudo systemctl start modelhub
 ```
 
 ### 使用 Docker
@@ -290,7 +290,7 @@ lsof -i :8000
 ```bash
 # 开发模式下日志会直接输出到终端
 # 生产模式检查 systemd 日志
-sudo journalctl -u multi-model-gateway -f
+sudo journalctl -u modelhub -f
 ```
 
 ### 数据库连接失败

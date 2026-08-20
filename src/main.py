@@ -1,5 +1,5 @@
 """
-Multi-Model Intelligent Orchestration Gateway
+ModelHub
 多模型智能编排网关 - 应用入口
 """
 
