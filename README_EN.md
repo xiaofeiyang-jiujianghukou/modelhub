@@ -25,6 +25,7 @@ A unified AI model access layer: a single API Key and a single Base URL to reach
 pip install -r requirements.txt
 cp .env.example .env            # fill in provider keys and the credential encryption key
 python scripts/init_db.py       # init DB + seed
+cd frontend && npm i && npm run build && cd ..   # build the web console
 uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 # Option B: Docker
@@ -89,7 +90,7 @@ src/
 ├── providers/         # adapters (openai / anthropic / gemini / mock) + 11-provider registry
 ├── routers/           # chat · responses · anthropic · models · images · videos · auth · providers · dashboard · web
 └── services/          # routing engine · model sync · credential encryption (AES-256-GCM) · health check
-web/                   # web console (zh/en)
+frontend/               # frontend (Vite + React 18 + Ant Design, zh/en)
 scripts/               # init_db · migrate_db · migrate_providers · generate_encryption_key
 tests/                 # 155 tests
 ```

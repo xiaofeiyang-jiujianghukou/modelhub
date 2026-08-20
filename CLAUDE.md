@@ -6,7 +6,7 @@
 
 模枢 ModelHub —— 多模型智能编排网关（复刻 freemodel.dev 自建）。统一 API Key + Base URL，接入火山方舟、DeepSeek、GLM 智谱 3 家供应商的 15+ 模型，兼容 Claude Code、Codex、OpenAI SDK。
 
-- **技术栈**: FastAPI + SQLAlchemy(SQLite) + httpx；97 项 pytest 全通过
+- **技术栈**: FastAPI + SQLAlchemy(SQLite) + httpx；前端 Vite + React 18 + TS + Ant Design 5（中英双语）；164 项 pytest 全通过
 - **三协议**: OpenAI `chat/completions`、OpenAI `responses`（Codex）、Anthropic `messages`（Claude Code）
 
 ## 常用命令
@@ -18,6 +18,8 @@ python scripts/migrate_providers.py               # .env 供应商 Key → DB（
 python scripts/generate_encryption_key.py         # 生成凭证加密密钥（占位值自愈）
 python scripts/migrate_db.py                      # 结构迁移（guarded ALTER，幂等；服务启动自动执行）
 pytest tests/ -q                                  # 跑测试
+cd frontend && npm run dev                        # 前端开发模式（5173，/v1 代理到 8000）
+cd frontend && npm run build                      # 构建前端 -> frontend/dist（本地跑 Web 控制台需先 build）
 ```
 
 - 服务日志在 `/tmp/gateway.log`
@@ -28,7 +30,7 @@ pytest tests/ -q                                  # 跑测试
 
 ```
 src/
-├── main.py             # 应用入口，挂载全部 router（lifespan 自动跑结构迁移）
+├── main.py             # 应用入口，挂载全部 router（lifespan 自动跑结构迁移）+ SPA fallback serve frontend/dist
 ├── config.py           # 环境配置（DEBUG、凭证加密密钥等）
 ├── database.py         # 异步 engine + AsyncSessionLocal（测试通过 monkeypatch 此模块隔离 DB）
 ├── db/
@@ -38,7 +40,7 @@ src/
 ├── routers/            # chat / responses / anthropic / models / images / videos / auth / dashboard / web
 │                       #   + providers.py（供应商管理：CRUD/同步/级联删除，admin 权限）
 └── services/           # router.py（智能路由）/ model_sync.py（拉取模型 4 种解析器 + upsert）/ crypto.py（AES-256-GCM 凭证）
-web/                    # Web 控制台（注册登录、Key 管理、供应商管理、测试对话、余额/日志/模型面板）
+frontend/               # 前端工程（Vite + React 18 + TS + AntD 5 + react-i18next 中英双语；面板：概览/API Keys/模型/日志/测试对话/接入文档/供应商 admin）
 scripts/                # init_db.py（种子）/ migrate_db.py（加列）/ migrate_providers.py（.env Key 迁移）/ generate_encryption_key.py
 ```
 
@@ -61,6 +63,7 @@ scripts/                # init_db.py（种子）/ migrate_db.py（加列）/ mig
 5. **供应商适配优先复用 `openai_provider`**，新供应商若协议兼容 OpenAI 无需新增 provider
 6. **计费一律 USD**：价格原始币种存 `models.price_currency`（CNY/USD），`middleware/billing.py` 的 `_to_usd()` 负责换算后扣费，严禁直接用 CNY 金额计费
 7. **重启网关前先确认 8000 端口无残留旧 uvicorn**：旧进程跑旧代码但数据库已被新迁移改列名（`models.id -> models.model`）时会报 `no such column: models.model`；`ss -ltnp | grep :8000` 查到后先 kill 再启动
+8. **改前端（frontend/）后**：本地跑需 `cd frontend && npm run build`（serve 的是 dist 产物）；Docker 部署直接 `docker compose up -d --build`（镜像内自动构建前端）；前端开发迭代用 `npm run dev`（5173 端口热更）
 
 ## 模型表结构（2026-08-15 重构后）
 
@@ -72,7 +75,7 @@ scripts/                # init_db.py（种子）/ migrate_db.py（加列）/ mig
 ## 外部依赖（不在仓库内，改坏需知）
 
 - 网关下游：Codex CLI 通过 cc-switch 连本地网关（`~/.codex/config.toml` + `model-catalog.local.json`），详见 Claude Code 记忆 `codex-gateway-setup`
-- Docker 部署：`Dockerfile` + `docker-compose.yml` 在根目录；部署细节见 `docs/DEPLOYMENT.md`
+- Docker 部署：`Dockerfile`（多阶段：node 前端 build → python 运行时）+ `docker-compose.yml` 在根目录；部署细节见 `docs/DEPLOYMENT.md`
 
 ## 文档
 

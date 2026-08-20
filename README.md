@@ -25,6 +25,7 @@
 pip install -r requirements.txt
 cp .env.example .env            # 填入供应商 Key 与凭证加密密钥
 python scripts/init_db.py       # 初始化数据库 + 种子
+cd frontend && npm i && npm run build && cd ..   # 构建前端（Web 控制台）
 uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 # 方式二：Docker
@@ -89,7 +90,7 @@ src/
 ├── providers/         # 适配器（openai / anthropic / gemini / mock）+ 11 家注册表
 ├── routers/           # chat · responses · anthropic · models · images · videos · auth · providers · dashboard · web
 └── services/          # 路由引擎 · 模型同步 · 凭证加密（AES-256-GCM）· 健康检查
-web/                   # Web 控制台（中英双语）
+frontend/               # 前端工程（Vite + React 18 + Ant Design 5，中英双语）
 scripts/               # init_db · migrate_db · migrate_providers · generate_encryption_key
 tests/                 # 155 项测试
 ```

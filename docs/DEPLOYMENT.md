@@ -1,8 +1,8 @@
 # 模枢 ModelHub（多模型智能编排网关） - 部署与使用文档
 
 > **版本**: 1.0.0  
-> **更新日期**: 2026-08-13  
-> **状态**: ✅ 全部 5 阶段完成，37 项测试全部通过
+> **更新日期**: 2026-08-20  
+> **状态**: ✅ 164 项测试全部通过；前端已迁移 frontend/（Vite + React + Ant Design）
 
 ---
 
@@ -12,6 +12,7 @@
 
 - Python 3.11+
 - pip 或 poetry
+- Node.js 18+（构建 Web 控制台前端；纯 API 使用或 Docker 部署可跳过）
 
 ### 1. 安装依赖
 
@@ -39,7 +40,16 @@ cp .env.example .env
 python -c "import asyncio; from src.database import init_db; asyncio.run(init_db())"
 ```
 
-### 4. 启动服务
+### 4. 构建前端（Web 控制台；Docker 部署无需此步，镜像内自动构建）
+
+```bash
+cd frontend
+npm install --registry=https://registry.npmmirror.com
+npm run build        # -> frontend/dist，由 FastAPI SPA fallback serve
+cd ..
+```
+
+### 5. 启动服务
 
 ```bash
 # 开发模式（自动重载）
