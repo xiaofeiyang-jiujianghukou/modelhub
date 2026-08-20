@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # ── 基础服务配置 ──────────────────────────────────────────
     app_name: str = "模枢 ModelHub"
     app_version: str = "1.0.0"
+    frontend_dist: str = "frontend/dist"   # Vite 构建产物目录（SPA 由 main.py 兜底 serve）
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000

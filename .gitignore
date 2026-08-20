@@ -26,3 +26,7 @@ gateway.db.bak-*
 gateway.db-journal*
 gateway.db-shm
 gateway.db-wal
+
+# ── 前端（Vite）────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/

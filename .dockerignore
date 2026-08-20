@@ -18,3 +18,7 @@ __pycache__/
 .gitignore
 docs/
 prd/
+
+# 前端（镜像内 Stage 1 构建，宿主依赖与产物不进 build context）
+frontend/node_modules/
+frontend/dist/

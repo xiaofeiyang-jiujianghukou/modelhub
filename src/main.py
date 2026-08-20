@@ -4,11 +4,12 @@ ModelHub
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from loguru import logger
 
 from src.config import settings
@@ -149,6 +150,29 @@ async def health_check():
 async def root():
     """根路径，跳转到 Web 控制台（未登录由前端自动跳 /login）"""
     return RedirectResponse(url="/dashboard")
+
+
+# ── 前端 SPA（Vite 构建产物）──────────────────────────────────────────────────
+# 兜底 serve：静态文件存在则返回文件，否则返回 index.html（React Router history 模式）
+# 必须挂在所有 /v1 API router 与 /health 之后（FastAPI 按定义顺序匹配）
+
+_FRONTEND_DIST = os.path.realpath(settings.frontend_dist)
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    if full_path:
+        file_path = os.path.realpath(os.path.join(_FRONTEND_DIST, full_path))
+        # realpath 前缀校验防路径穿越
+        if file_path.startswith(_FRONTEND_DIST + os.sep) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+    index_path = os.path.join(_FRONTEND_DIST, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        status_code=404,
+        content={"error": {"message": "Frontend not built", "type": "api_error", "code": "frontend_missing"}},
+    )
 
 
 # ── 启动入口 ───────────────────────────────────────────────────────────────────
