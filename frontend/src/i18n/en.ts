@@ -7,6 +7,7 @@ export default {
     type: 'Type', actions: 'Actions', enabled: 'Enabled', disabled: 'Disabled',
     createdAt: 'Created', lastUsed: 'Last used', never: 'Never',
     success: 'Success', failed: 'Failed', copy: 'Copy', copied: 'Copied',
+    close: 'Close', view: 'View',
   },
 
   login: {

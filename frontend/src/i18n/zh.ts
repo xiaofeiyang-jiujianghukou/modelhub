@@ -7,6 +7,7 @@ export default {
     type: '类型', actions: '操作', enabled: '启用', disabled: '禁用',
     createdAt: '创建时间', lastUsed: '最近使用', never: '从未使用',
     success: '成功', failed: '失败', copy: '复制', copied: '已复制',
+    close: '关闭', view: '查看',
   },
 
   login: {

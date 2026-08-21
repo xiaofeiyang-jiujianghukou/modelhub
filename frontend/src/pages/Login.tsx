@@ -44,7 +44,8 @@ export default function Login() {
     setLoading(true)
     try {
       await postRegister(v.email, v.password, v.displayName)
-      // 注册成功即自动登录，跳转到 API Keys 页（默认 Key 已自动创建，可在控制台查看复制）
+      // 短暂停顿让用户感知注册成功，再自动登录跳转
+      await new Promise((r) => setTimeout(r, 700))
       const r = await postLogin(v.email, v.password)
       setToken(r.data.access_token)
       nav('/dashboard/keys', { replace: true })

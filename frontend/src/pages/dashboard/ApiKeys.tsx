@@ -68,25 +68,12 @@ export default function ApiKeys() {
   }
 
   const KEY_DISPLAY = (k: string | null) => (
-    <div
-      style={{
-        background: '#1a1a2e',
-        color: '#7df9ff',
-        padding: 12,
-        borderRadius: 8,
-        fontFamily: 'monospace',
-        fontSize: 13,
-        wordBreak: 'break-all',
-        marginTop: 8,
-      }}
-    >
-      {k}
+    <div>
       {k && (
         <Button
-          type="link"
           size="small"
           icon={<CopyOutlined />}
-          style={{ color: '#7df9ff', float: 'right' }}
+          style={{ marginBottom: 8 }}
           onClick={() => {
             navigator.clipboard?.writeText(k)
             message.success(t('common.copied'))
@@ -95,6 +82,19 @@ export default function ApiKeys() {
           {t('common.copy')}
         </Button>
       )}
+      <div
+        style={{
+          background: '#1a1a2e',
+          color: '#7df9ff',
+          padding: 12,
+          borderRadius: 8,
+          fontFamily: 'monospace',
+          fontSize: 13,
+          wordBreak: 'break-all',
+        }}
+      >
+        {k || '...'}
+      </div>
     </div>
   )
 
@@ -159,7 +159,7 @@ export default function ApiKeys() {
               <Space size={4}>
                 {row.can_reveal && (
                   <Button size="small" icon={<EyeOutlined />} onClick={() => doReveal(row)}>
-                    {t('common.copy')}
+                    {t('common.view')}
                   </Button>
                 )}
                 {row.is_active && (
