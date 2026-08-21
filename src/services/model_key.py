@@ -49,7 +49,7 @@ def parse_model_key(model_name: str) -> tuple[str, Optional[str]]:
 
 
 # reasoning 模型关键词（思考与正文共享 max_tokens 预算，太小会导致正文为空）
-_REASONING_MODEL_HINTS = ("glm-5", "deepseek-v4", "deepseek-v3", "doubao-seed", "kimi-k2", "qwen3")
+_REASONING_MODEL_HINTS = ("glm-5", "deepseek-v4", "deepseek-v3", "doubao-seed", "kimi-k2", "qwen3", "minimax-m3", "grok-4")
 
 
 def is_reasoning_model(model_name: str) -> bool:
