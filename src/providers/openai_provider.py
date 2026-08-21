@@ -14,6 +14,83 @@ from loguru import logger
 from src.providers.base import BaseProvider
 
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _split_inline_think(content: str) -> tuple[str, str]:
+    """拆出内联 <think> 思考段，返回 (reasoning, content)。
+
+    未闭合的 <think>（流被截断）视为思考，剩余全部归思考。
+    """
+    if _THINK_OPEN not in content:
+        return "", content
+    import re
+    pat = re.escape(_THINK_OPEN) + r"(.*?)" + re.escape(_THINK_CLOSE)
+    parts = re.findall(pat, content, re.S)
+    rest = re.sub(pat, "", content, flags=re.S)
+    if _THINK_OPEN in rest:  # 未闭合（截断）
+        head, tail = rest.split(_THINK_OPEN, 1)
+        parts.append(tail)
+        rest = head
+    return "\n".join(p.strip() for p in parts if p.strip()), rest.strip()
+
+
+def _split_message_inline_think(data: dict[str, Any]) -> None:
+    """非流式：choices[].message.content 内联 <think> 拆到 reasoning_content（原地）"""
+    try:
+        msg = data["choices"][0]["message"]
+        content = msg.get("content")
+        if isinstance(content, str):
+            reasoning, clean = _split_inline_think(content)
+            if reasoning:
+                msg["content"] = clean
+                msg["reasoning_content"] = (msg.get("reasoning_content") or "") + reasoning
+    except (KeyError, IndexError, TypeError):
+        pass
+
+
+class _InlineThinkSplitter:
+    """流式内联 <think> 拆分器：feed(content_delta) -> (reasoning_delta, content_delta)。
+
+    标签可能被 chunk 边界切断（如 "<th" + "ink>"），用尾部前缀缓冲处理；
+    flush() 在流结束时输出残留缓冲。
+    """
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buf = ""
+
+    def _tail_partial(self, tag: str) -> int:
+        for k in range(min(len(self._buf), len(tag) - 1), 0, -1):
+            if self._buf.endswith(tag[:k]):
+                return k
+        return 0
+
+    def feed(self, text: str) -> tuple[str, str]:
+        self._buf += text
+        r_out: list[str] = []
+        c_out: list[str] = []
+        while self._buf:
+            tag = _THINK_CLOSE if self._in_think else _THINK_OPEN
+            idx = self._buf.find(tag)
+            if idx != -1:
+                (r_out if self._in_think else c_out).append(self._buf[:idx])
+                self._buf = self._buf[idx + len(tag):]
+                self._in_think = not self._in_think
+                continue
+            keep = self._tail_partial(tag)
+            cut = len(self._buf) - keep
+            (r_out if self._in_think else c_out).append(self._buf[:cut])
+            self._buf = self._buf[cut:]
+            break
+        return "".join(r_out), "".join(c_out)
+
+    def flush(self) -> tuple[str, str]:
+        buf, self._buf = self._buf, ""
+        return (buf, "") if self._in_think else ("", buf)
+
+
 class OpenAIProvider(BaseProvider):
     """OpenAI 官方 API 适配器（直接转发，格式已兼容）"""
 
@@ -73,7 +150,9 @@ class OpenAIProvider(BaseProvider):
                 json=body,
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            _split_message_inline_think(data)
+            return data
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "openai upstream error status={} body={}",
@@ -125,9 +204,49 @@ class OpenAIProvider(BaseProvider):
                     yield f"data: {err}\n\n"
                     yield f"data: [DONE]\n\n"
                     return
+                # 内联 <think> 拆分：MiniMax-M3 / 部分开源模型把思考内联在 content，
+                # 网关统一拆成 reasoning_content（流式状态机处理跨 chunk 标签切断）
+                splitter = _InlineThinkSplitter()
                 async for line in resp.aiter_lines():
-                    if line:
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
                         yield line + "\n"
+                        continue
+                    payload_str = line[5:].strip()
+                    if payload_str == "[DONE]":
+                        r, c = splitter.flush()
+                        if r or c:
+                            tail: dict[str, Any] = {}
+                            if r:
+                                tail["reasoning_content"] = r
+                            if c:
+                                tail["content"] = c
+                            yield "data: " + json.dumps({"choices": [{"index": 0, "delta": tail}]}, ensure_ascii=False) + "\n"
+                        yield line + "\n"
+                        continue
+                    try:
+                        obj = json.loads(payload_str)
+                    except Exception:
+                        yield line + "\n"
+                        continue
+                    choices = obj.get("choices") or []
+                    delta = choices[0].get("delta") if choices else None
+                    if isinstance(delta, dict) and isinstance(delta.get("content"), str) and delta["content"]:
+                        orig = delta["content"]
+                        r, c = splitter.feed(delta.pop("content"))
+                        if r == "" and c == orig:
+                            # 无 <think> 痕迹：原行透传（普通模型零改写）
+                            delta["content"] = orig
+                            yield line + "\n"
+                            continue
+                        if r:
+                            delta["reasoning_content"] = (delta.get("reasoning_content") or "") + r
+                        if c:
+                            delta["content"] = c
+                        yield "data: " + json.dumps(obj, ensure_ascii=False) + "\n"
+                        continue
+                    yield line + "\n"
         except Exception as exc:
             logger.error("openai stream failed: {}", exc)
             err = json.dumps({"error": {"message": str(exc), "type": "api_error", "code": "upstream_error"}})
