@@ -185,7 +185,7 @@ async def test_stream_tool_use_to_openai_delta(monkeypatch):
     transport = httpx.MockTransport(lambda req: httpx.Response(200, text="".join(events)))
     monkeypatch.setattr(
         "src.providers.anthropic_provider.httpx.AsyncClient",
-        lambda *a, **k: real_client(transport=transport, *a, **k),
+        lambda *a, **k: real_client(transport=transport, **{**k, "proxy": None}),
     )
 
     parsed = []

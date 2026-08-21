@@ -8,6 +8,19 @@ import httpx
 from typing import Any, AsyncGenerator, Optional
 
 
+def make_upstream_client(**kwargs) -> httpx.AsyncClient:
+    """上游 HTTP 客户端公共工厂：统一注入代理与默认参数。
+
+    所有供应商适配器 / 模型同步一律经此创建 httpx 客户端，代理只在这里配置：
+    - settings.upstream_proxy 非空时境外供应商（Grok/OpenAI/Claude/Gemini 等）走代理
+    - trust_env=False 忽略系统代理环境变量（境内供应商直连）
+    """
+    from src.config import settings
+    kwargs.setdefault("trust_env", False)
+    kwargs.setdefault("proxy", settings.upstream_proxy or None)
+    return httpx.AsyncClient(**kwargs)
+
+
 class BaseProvider(abc.ABC):
     """
     供应商适配器基类

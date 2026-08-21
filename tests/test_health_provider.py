@@ -19,6 +19,7 @@ def _mock_anthropic_http(monkeypatch, status_code, body=None):
     transport = httpx.MockTransport(lambda req: httpx.Response(status_code, json=body or {}))
 
     def _factory(*a, **k):
+        k.pop("proxy", None)  # 测试隔离：不打真实上游代理
         return real_async_client(transport=transport, *a, **k)
 
     monkeypatch.setattr("src.providers.anthropic_provider.httpx.AsyncClient", _factory)
@@ -108,6 +109,7 @@ async def test_anthropic_health_check_rejects_no_key(monkeypatch):
     transport = httpx.MockTransport(lambda req: calls.append(req) or httpx.Response(401))
 
     def _factory(*a, **k):
+        k.pop("proxy", None)  # 测试隔离：不打真实上游代理
         return real_async_client(transport=transport, *a, **k)
 
     monkeypatch.setattr("src.providers.anthropic_provider.httpx.AsyncClient", _factory)
@@ -124,6 +126,7 @@ async def test_openai_health_check_rejects_no_key(monkeypatch):
     transport = httpx.MockTransport(lambda req: calls.append(req) or httpx.Response(401))
 
     def _factory(*a, **k):
+        k.pop("proxy", None)  # 测试隔离：不打真实上游代理
         return real_async_client(transport=transport, *a, **k)
 
     monkeypatch.setattr("src.providers.openai_provider.httpx.AsyncClient", _factory)

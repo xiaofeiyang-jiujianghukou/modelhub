@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.db.models import Model, ModelReference, Provider
+from src.providers.base import make_upstream_client
 from src.providers.provider_registry import (
     ProviderSpec, _excluded, get_spec,
 )
@@ -56,7 +57,7 @@ class SyncResult(BaseModel):
 # ── 上游拉取 ──────────────────────────────────────────────────────────────────
 
 async def _http_get(url: str, headers: dict, timeout: float, params: Optional[dict] = None) -> dict:
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=settings.upstream_proxy or None) as client:
+    async with make_upstream_client(timeout=timeout) as client:
         resp = await client.get(url, headers=headers, params=params)
         if resp.status_code == 401 or resp.status_code == 403:
             raise ValueError(f"API Key 无效或无权访问（HTTP {resp.status_code}）")
@@ -120,6 +121,30 @@ def _ark_family(model_id: str) -> str:
         if low.startswith(fam):
             return fam
     return "other"
+
+
+def _series_key(model_id: str) -> str:
+    """系列识别（series_latest 用）：deepseek 按 pro/flash 分线，其余复用 _ark_family；other 不参与系列去重"""
+    low = model_id.lower()
+    fam = _ark_family(low)
+    if fam == "deepseek":
+        if "pro" in low:
+            return "deepseek-pro"
+        if "flash" in low:
+            return "deepseek-flash"
+    return fam
+
+
+def _version_rank(model_id: str) -> tuple:
+    """模型 ID 的版本数值序列（无日期命名的新旧比较）：
+    glm-5.2 → (5,2) > glm-5.1 → (5,1) > glm-5 → (5,)
+    minimax-m2.7 → (2,7) > minimax-m2.5 → (2,5)；deepseek-v4-flash-202605 → (4,202605)
+    """
+    import re as _re
+    parts: list[int] = []
+    for tok in _re.findall(r'\d+(?:\.\d+)*', model_id):
+        parts.extend(int(x) for x in tok.split('.'))
+    return tuple(parts)
 
 
 # 方舟家族保留特例：family → 保留的基础名集合（按能力高到低保留多个）
@@ -371,6 +396,21 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                     sm.upstream_model = sm.id      # 原始带日期 id（路由用）
                     sm.id = _ark_base_name(sm.id)  # 网关 id 去掉日期后缀（如 doubao-seedream-5-0-pro）
                 synced = list(best.values())
+            # series_latest：同一系列只保留最新版本（用于无日期后缀的版本号命名，
+            #     如 lkeap 的 glm-5.1/5.2、minimax-m2.5/m2.7）——按 _series_key 分组，
+            #     组内取 _version_rank 最大者；deepseek 分 pro/flash 两线各留最新；
+            #     other 系列（如 tc-code-latest）不参与去重原样保留
+            if spec.series_latest:
+                best_series: dict[str, SyncedModel] = {}
+                for sm in synced:
+                    series = _series_key(sm.id)
+                    if series == "other":
+                        continue
+                    cur = best_series.get(series)
+                    if cur is None or (_version_rank(sm.id), sm.created or -1) > (_version_rank(cur.id), cur.created or -1):
+                        best_series[series] = sm
+                keep_ids = {sm.id for sm in best_series.values()}
+                synced = [sm for sm in synced if _series_key(sm.id) == "other" or sm.id in keep_ids]
             # api 拉取：价格/上下文优先用上游返回；上游缺失时用 model_references 表兜底
             # （兜底必须在去重改名之后执行，否则带日期 id 查不到 clean 名参考）
             for sm in synced:
@@ -388,6 +428,26 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 # 上下文：上游未返回时用表内参考值
                 if sm.context_window is None and ref and ref.context_window is not None:
                     sm.context_window = ref.context_window
+
+        # 1.9 批内去重：model_id_map 可能把多个上游 ID 归一到同一网关 ID（如
+        #     glm-5-1 与 glm-5.1 -> glm-5.1），pending 对象未 flush 时同批 INSERT
+        #     会撞复合主键；保留价格/上下文信息更全的一条
+        def _richness(s: SyncedModel) -> int:
+            return (2 if s.input_price is not None else 0) + \
+                   (2 if s.output_price is not None else 0) + \
+                   (1 if s.context_window is not None else 0)
+
+        _dedup: dict[str, SyncedModel] = {}
+        for sm in synced:
+            cur = _dedup.get(sm.id)
+            if cur is None:
+                _dedup[sm.id] = sm
+            else:
+                rs, rc = _richness(sm), _richness(cur)
+                # 信息量优先；同信息量保留最新版本（上游时间戳新者）
+                if rs > rc or (rs == rc and (sm.created or -1) > (cur.created or -1)):
+                    _dedup[sm.id] = sm
+        synced = list(_dedup.values())
 
         # 2. 事务内 upsert（模型名 + 厂商 复合唯一）
         for sm in synced:
@@ -440,9 +500,9 @@ async def sync_provider_models(db: AsyncSession, provider: Provider, spec: Provi
                 result.added += 1
             result.model_ids.append(sm.id)
 
-        # 2.5 keep_latest_only：清理管理家族内未保留的模型（含旧版本与被 exclude 排除后残留的）
+        # 2.5 keep_latest_only / series_latest：清理管理家族内未保留的模型（含旧版本残留）
         #     kimi/minimax 等非管理家族模型保留不动
-        if spec.keep_latest_only:
+        if spec.keep_latest_only or spec.series_latest:
             retained_ids = {sm.id for sm in synced}
             db_models = (await db.execute(
                 select(Model).where(Model.vendor == spec.key)

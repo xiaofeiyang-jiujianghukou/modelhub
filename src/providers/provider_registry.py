@@ -49,6 +49,7 @@ class ProviderSpec:
     known_contexts: Tuple[Tuple[str, int], ...] = ()  # (模型ID, 上下文窗口) 官方文档核对值
     model_id_map: Tuple[Tuple[str, str], ...] = ()  # (上游模型ID, 网关统一ID) 同名模型归一化（如百炼 glm-5.2 → glm-5-2）
     keep_latest_only: bool = False  # 同厂商同类型只保留最新版本，同步时移除旧版（方舟多版本日期后缀模型用）
+    series_latest: bool = False     # 同系列只保留最新版本（版本号命名如 glm-5.1/5.2，deepseek 分 pro/flash 两线各留最新）
 
 
 def _excluded(model_id: str, patterns: Tuple[str, ...]) -> bool:
@@ -91,8 +92,23 @@ _PROVIDER_SPECS = [
         key="hunyuan", display_name="混元 (腾讯 TokenPlan)",
         default_base_url="https://api.lkeap.cloud.tencent.com/plan/v3",
         model_source="api",
-        # 端点同时返回同模型的横线/点号双命名与含斜杠 ID（破坏 厂商/模型 键格式），全部排除
-        exclude_patterns=("deepseek/", "glm-5-", "kimi-k-2-", "minimax-m-2-", "-0731", "-0813"),
+        series_latest=True,
+        # 端点返回含斜杠 ID（deepseek/xxx，破坏 厂商/模型 键格式）与同模型横线/点号双命名，
+        # 用 model_id_map 归一化保留全部模型：截前缀 + 日期版归主名 + 横线归点号
+        model_id_map=(
+            ("deepseek/deepseek-v4-flash", "deepseek-v4-flash"),
+            ("deepseek/deepseek-v4-flash-0731", "deepseek-v4-flash"),
+            ("deepseek-v4-flash-202605", "deepseek-v4-flash"),
+            ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+            ("deepseek/deepseek-v4-pro-0813", "deepseek-v4-pro"),
+            ("deepseek-v4-pro-202606", "deepseek-v4-pro"),
+            ("glm-5-0", "glm-5.0"),
+            ("glm-5-1", "glm-5.1"),
+            ("glm-5-2", "glm-5.2"),
+            ("kimi-k-2-5", "kimi-k2.5"),
+            ("minimax-m-2-5", "minimax-m2.5"),
+            ("minimax-m-2-7", "minimax-m2.7"),
+        ),
     ),
     # ── 阿里百炼 Token Plan（套餐端点，GET /models 可用，api 拉取）────────────────
     # token-plan.cn-beijing.maas.aliyuncs.com 为 Token Plan 订阅套餐专用端点（Key 为 sk-sp- 前缀）

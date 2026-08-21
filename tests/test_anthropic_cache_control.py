@@ -143,7 +143,7 @@ async def test_stream_emits_usage_chunk_with_cache(monkeypatch):
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         "src.providers.anthropic_provider.httpx.AsyncClient",
-        lambda *a, **k: real_client(transport=transport, *a, **k),
+        lambda *a, **k: real_client(transport=transport, **{**k, "proxy": None}),
     )
 
     chunks = []

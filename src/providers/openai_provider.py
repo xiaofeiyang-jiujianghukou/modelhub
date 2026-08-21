@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator
 
 import httpx
 
-from src.config import settings
+from src.providers.base import make_upstream_client
 from loguru import logger
 
 from src.providers.base import BaseProvider
@@ -21,7 +21,7 @@ class OpenAIProvider(BaseProvider):
         super().__init__(base_url, api_key, timeout_seconds)
         # 持久连接池：跨请求复用 TCP/TLS（trust_env=False 忽略系统代理，国内直连更可预测）
         # build_provider 缓存 adapter 后，连接池跨请求存活，避免每次握手
-        self._http = httpx.AsyncClient(timeout=timeout_seconds, trust_env=False, proxy=settings.upstream_proxy or None)
+        self._http = make_upstream_client(timeout=timeout_seconds)
         # base_url 为完整 API 根路径（如 https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4）
 
     @property
