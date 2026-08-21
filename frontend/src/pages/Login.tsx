@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card, Tabs, Form, Input, Button, Typography, message } from 'antd'
+import { Card, Tabs, Form, Input, Button, Typography, message, Modal } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../store/auth'
@@ -43,12 +43,45 @@ export default function Login() {
     setErr('')
     setLoading(true)
     try {
-      await postRegister(v.email, v.password, v.displayName)
-      message.success(t('login.registerOk'))
-      // 注册成功直接登录跳转
-      const r = await postLogin(v.email, v.password)
-      setToken(r.data.access_token)
-      nav(target, { replace: true })
+      const reg = await postRegister(v.email, v.password, v.displayName)
+      // 注册成功即拿到默认 Key，展示给用户复制
+      const dk = reg.data.default_key
+      if (dk) {
+        Modal.info({
+          title: t('login.registerOk'),
+          content: (
+            <div>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>
+                {t('keys.createdTip')}
+              </Typography.Paragraph>
+              <div
+                style={{
+                  background: '#1a1a2e',
+                  color: '#7df9ff',
+                  padding: 12,
+                  borderRadius: 8,
+                  fontFamily: 'monospace',
+                  fontSize: 13,
+                  wordBreak: 'break-all',
+                }}
+              >
+                {dk.key}
+              </div>
+            </div>
+          ),
+          okText: t('login.tabLogin'),
+          onOk: async () => {
+            const r = await postLogin(v.email, v.password)
+            setToken(r.data.access_token)
+            nav(target, { replace: true })
+          },
+        })
+      } else {
+        message.success(t('login.registerOk'))
+        const r = await postLogin(v.email, v.password)
+        setToken(r.data.access_token)
+        nav(target, { replace: true })
+      }
     } catch (e) {
       setErr(errMsg(e) || t('login.registerFailed'))
     } finally {

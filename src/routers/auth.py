@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.db.models import ApiKey, RequestLog, User, to_utc_timestamp
 from src.middleware.auth import auth_service, get_current_user_jwt, get_api_key_user
+from src.services.crypto import decrypt_credentials
 
 router = APIRouter(tags=["Auth"])
 
@@ -43,13 +44,18 @@ class CreateKeyRequest(BaseModel):
 
 @router.post("/auth/register")
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    """注册新用户，自动创建余额记录"""
+    """注册新用户，自动创建余额记录 + 默认 API Key（可查看复制）"""
     user = await auth_service.register(db, req.email, req.password, req.display_name)
+    # 注册即创建默认 Key（加密存明文，可在控制台随时查看复制）
+    api_key, raw_key = await auth_service.create_api_key(
+        db, user.id, "Default Key", store_plaintext=True
+    )
     return {
         "id": user.id,
         "email": user.email,
         "display_name": user.display_name,
         "message": "Registration successful",
+        "default_key": {"id": api_key.id, "name": api_key.name, "key": raw_key},
     }
 
 
@@ -83,6 +89,7 @@ async def list_keys(
                 "id": k.id,
                 "name": k.name,
                 "key_prefix": f"{k.key_prefix}...",
+                "can_reveal": bool(k.key_enc),
                 "is_active": k.is_active,
                 "last_used_at": to_utc_timestamp(k.last_used_at),
                 "created_at": to_utc_timestamp(k.created_at),
@@ -98,14 +105,42 @@ async def create_key(
     current_user: dict = Depends(get_current_user_jwt),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建 API Key（明文仅返回一次）"""
-    api_key, raw_key = await auth_service.create_api_key(db, current_user["sub"], req.name)
+    """创建 API Key（明文仅返回一次；加密存明文可后续查看复制）"""
+    api_key, raw_key = await auth_service.create_api_key(
+        db, current_user["sub"], req.name, store_plaintext=True
+    )
     return {
         "id": api_key.id,
         "name": api_key.name,
         "key": raw_key,  # 仅此一次显示
         "message": "Save this key now - it will not be shown again",
     }
+
+
+@router.get("/dashboard/keys/{key_id}/reveal")
+async def reveal_key(
+    key_id: str,
+    current_user: dict = Depends(get_current_user_jwt),
+    db: AsyncSession = Depends(get_db),
+):
+    """揭示 API Key 明文（仅限 store_plaintext=True 创建的 Key）"""
+    api_key = await db.scalar(
+        select(ApiKey).where(
+            ApiKey.id == key_id, ApiKey.user_id == current_user["sub"]
+        )
+    )
+    if not api_key:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"message": "Key not found", "type": "invalid_request_error", "code": "not_found"}},
+        )
+    if not api_key.key_enc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"message": "This key was created before the reveal feature and cannot be shown", "type": "invalid_request_error", "code": "not_revealable"}},
+        )
+    decrypted = decrypt_credentials(api_key.key_enc)
+    return {"id": api_key.id, "name": api_key.name, "key": decrypted.get("api_key", "")}
 
 
 @router.delete("/dashboard/keys/{key_id}")

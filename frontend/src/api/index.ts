@@ -4,7 +4,7 @@ import client from './client'
 export const postLogin = (email: string, password: string) =>
   client.post<{ access_token: string }>('/auth/login', { email, password })
 export const postRegister = (email: string, password: string, display_name: string) =>
-  client.post<{ message: string }>('/auth/register', { email, password, display_name })
+  client.post<{ message: string; default_key?: { id: string; name: string; key: string } }>('/auth/register', { email, password, display_name })
 export const postLogout = () => client.post('/auth/logout')
 
 // ── dashboard（用户态）───────────────────────────────────────────────────────
@@ -15,6 +15,8 @@ export const listKeys = () =>
 export const createKey = (name: string) =>
   client.post<{ key: string; message: string }>('/dashboard/keys', { name })
 export const revokeKey = (id: string) => client.delete(`/dashboard/keys/${id}`)
+export const revealKey = (id: string) =>
+  client.get<{ id: string; name: string; key: string }>(`/dashboard/keys/${id}/reveal`)
 export const getLogs = (limit = 50) =>
   client.get<{ data: LogItem[]; total: number }>('/dashboard/logs', { params: { limit } })
 
@@ -22,6 +24,7 @@ export interface ApiKeyItem {
   id: string
   name: string
   key_prefix: string
+  can_reveal: boolean
   is_active: boolean
   last_used_at: number | null
   created_at: number

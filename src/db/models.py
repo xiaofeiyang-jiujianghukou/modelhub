@@ -70,7 +70,7 @@ class User(Base):
 # ── API Key 表 ─────────────────────────────────────────────────────────────────
 
 class ApiKey(Base):
-    """用户 API Key，仅存哈希，原文仅创建时返回一次"""
+    """用户 API Key，哈希用于鉴权；key_enc 加密存明文（可揭示复制），旧 key 为 NULL"""
 
     __tablename__ = "api_keys"
 
@@ -79,6 +79,7 @@ class ApiKey(Base):
     name: str = Column(String(100), nullable=False)
     key_prefix: str = Column(String(8), nullable=False)   # sk-AbCdEf 前 8 位，快速查询
     key_hash: str = Column(String(64), nullable=False, unique=True)  # SHA-256
+    key_enc: Optional[str] = Column(Text, nullable=True)  # AES-256-GCM 加密的明文 key（可揭示）；旧 key 为 NULL
     is_active: bool = Column(Boolean, default=True, nullable=False)
     monthly_limit_usd: Optional[float] = Column(Numeric(10, 6), nullable=True)
     created_at: datetime = Column(DateTime(timezone=True), default=_now, nullable=False)

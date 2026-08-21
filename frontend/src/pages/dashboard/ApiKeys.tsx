@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Tag, Button, Input, Space, Typography, Popconfirm, message } from 'antd'
+import { Card, Table, Tag, Button, Input, Space, Typography, Popconfirm, message, Modal } from 'antd'
+import { EyeOutlined, CopyOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
-import { listKeys, createKey, revokeKey, type ApiKeyItem } from '../../api'
+import { listKeys, createKey, revokeKey, revealKey, type ApiKeyItem } from '../../api'
 import { errMsg } from '../../api/client'
 
 export default function ApiKeys() {
@@ -10,6 +11,9 @@ export default function ApiKeys() {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   const [newKey, setNewKey] = useState<string | null>(null)
+  const [revealTarget, setRevealTarget] = useState<ApiKeyItem | null>(null)
+  const [revealedKey, setRevealedKey] = useState<string | null>(null)
+  const [revealing, setRevealing] = useState(false)
 
   const load = () => {
     listKeys()
@@ -34,6 +38,21 @@ export default function ApiKeys() {
     }
   }
 
+  const doReveal = async (row: ApiKeyItem) => {
+    setRevealTarget(row)
+    setRevealedKey(null)
+    setRevealing(true)
+    try {
+      const r = await revealKey(row.id)
+      setRevealedKey(r.data.key)
+    } catch (e) {
+      message.error(errMsg(e))
+      setRevealTarget(null)
+    } finally {
+      setRevealing(false)
+    }
+  }
+
   const doRevoke = async (id: string) => {
     try {
       await revokeKey(id)
@@ -47,6 +66,37 @@ export default function ApiKeys() {
     if (!ts) return t('common.never')
     return new Date(ts * 1000).toLocaleString()
   }
+
+  const KEY_DISPLAY = (k: string | null) => (
+    <div
+      style={{
+        background: '#1a1a2e',
+        color: '#7df9ff',
+        padding: 12,
+        borderRadius: 8,
+        fontFamily: 'monospace',
+        fontSize: 13,
+        wordBreak: 'break-all',
+        marginTop: 8,
+      }}
+    >
+      {k}
+      {k && (
+        <Button
+          type="link"
+          size="small"
+          icon={<CopyOutlined />}
+          style={{ color: '#7df9ff', float: 'right' }}
+          onClick={() => {
+            navigator.clipboard?.writeText(k)
+            message.success(t('common.copied'))
+          }}
+        >
+          {t('common.copy')}
+        </Button>
+      )}
+    </div>
+  )
 
   return (
     <Card
@@ -71,20 +121,7 @@ export default function ApiKeys() {
           <Typography.Text type="danger" style={{ fontSize: 13 }}>
             {t('keys.createdTip')}
           </Typography.Text>
-          <div
-            style={{
-              background: '#1a1a2e',
-              color: '#7df9ff',
-              padding: 12,
-              borderRadius: 8,
-              fontFamily: 'monospace',
-              fontSize: 13,
-              wordBreak: 'break-all',
-              marginTop: 8,
-            }}
-          >
-            {newKey}
-          </div>
+          {KEY_DISPLAY(newKey)}
         </div>
       )}
 
@@ -113,21 +150,47 @@ export default function ApiKeys() {
           {
             title: t('common.lastUsed'),
             dataIndex: 'last_used_at',
+            responsive: ['sm'],
             render: fmtTime,
           },
           {
             title: t('common.actions'),
-            render: (_, row) =>
-              row.is_active ? (
-                <Popconfirm title={t('keys.revokeConfirm')} onConfirm={() => doRevoke(row.id)}>
-                  <Button size="small" danger>
-                    {t('keys.revoke')}
+            render: (_, row) => (
+              <Space size={4}>
+                {row.can_reveal && (
+                  <Button size="small" icon={<EyeOutlined />} onClick={() => doReveal(row)}>
+                    {t('common.copy')}
                   </Button>
-                </Popconfirm>
-              ) : null,
+                )}
+                {row.is_active && (
+                  <Popconfirm title={t('keys.revokeConfirm')} onConfirm={() => doRevoke(row.id)}>
+                    <Button size="small" danger>
+                      {t('keys.revoke')}
+                    </Button>
+                  </Popconfirm>
+                )}
+              </Space>
+            ),
           },
         ]}
       />
+
+      <Modal
+        title={revealTarget?.name}
+        open={!!revealTarget}
+        onCancel={() => setRevealTarget(null)}
+        footer={[
+          <Button key="close" onClick={() => setRevealTarget(null)}>
+            {t('common.close')}
+          </Button>,
+        ]}
+      >
+        {revealing ? (
+          <Typography.Text type="secondary">...</Typography.Text>
+        ) : (
+          KEY_DISPLAY(revealedKey)
+        )}
+      </Modal>
     </Card>
   )
 }

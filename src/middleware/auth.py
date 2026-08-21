@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.database import get_db
 from src.db.models import ApiKey, Balance, User
+from src.services.crypto import encrypt_credentials, decrypt_credentials
 
 # ── 密码工具 ──────────────────────────────────────────────────────────────────
 
@@ -264,14 +265,20 @@ class AuthService:
         _blacklisted_tokens.add(token)
 
     @staticmethod
-    async def create_api_key(db: AsyncSession, user_id: str, name: str) -> tuple[ApiKey, str]:
-        """创建 API Key，返回 (ApiKey 对象, 明文 key)；明文仅返回一次"""
+    async def create_api_key(
+        db: AsyncSession, user_id: str, name: str, *, store_plaintext: bool = False
+    ) -> tuple[ApiKey, str]:
+        """创建 API Key，返回 (ApiKey 对象, 明文 key)。
+
+        store_plaintext=True 时加密存明文到 key_enc（可后续揭示复制，如注册默认 Key）。
+        """
         raw_key = _generate_api_key()
         api_key = ApiKey(
             user_id=user_id,
             name=name,
             key_prefix=_key_prefix(raw_key),
             key_hash=_hash_api_key(raw_key),
+            key_enc=encrypt_credentials({"api_key": raw_key}) if store_plaintext else None,
         )
         db.add(api_key)
         await db.commit()

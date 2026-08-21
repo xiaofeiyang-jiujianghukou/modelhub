@@ -42,6 +42,9 @@ MIGRATIONS = [
         ("cache_hit_tokens", "INTEGER"),
         ("cache_miss_tokens", "INTEGER"),
     ]),
+    ("api_keys", [
+        ("key_enc", "TEXT"),
+    ]),
 ]
 
 
