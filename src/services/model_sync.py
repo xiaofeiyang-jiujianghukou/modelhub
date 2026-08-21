@@ -56,7 +56,7 @@ class SyncResult(BaseModel):
 # ── 上游拉取 ──────────────────────────────────────────────────────────────────
 
 async def _http_get(url: str, headers: dict, timeout: float, params: Optional[dict] = None) -> dict:
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=settings.upstream_proxy or None) as client:
         resp = await client.get(url, headers=headers, params=params)
         if resp.status_code == 401 or resp.status_code == 403:
             raise ValueError(f"API Key 无效或无权访问（HTTP {resp.status_code}）")

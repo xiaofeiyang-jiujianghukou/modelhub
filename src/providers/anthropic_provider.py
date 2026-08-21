@@ -170,7 +170,7 @@ class AnthropicProvider(BaseProvider):
         super().__init__(base_url, api_key, timeout_seconds)
         # 持久连接池：跨请求复用 TCP/TLS。trust_env=False 忽略系统代理
         # （用户多用智谱 anthropic 兼容端点，直连即可；且系统 socks:// 代理 httpx 不认会报错）
-        self._http = httpx.AsyncClient(timeout=timeout_seconds, trust_env=False)
+        self._http = httpx.AsyncClient(timeout=timeout_seconds, trust_env=False, proxy=settings.upstream_proxy or None)
 
     @property
     def name(self) -> str:

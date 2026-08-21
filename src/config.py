@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_name: str = "模枢 ModelHub"
     app_version: str = "1.0.0"
     frontend_dist: str = "frontend/dist"   # Vite 构建产物目录（SPA 由 main.py 兜底 serve）
+    upstream_proxy: str = ""               # 上游代理（境外供应商 Grok/OpenAI/Claude/Gemini 需代理时配，如 http://127.0.0.1:7897；空 = 直连）
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000

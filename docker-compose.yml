@@ -8,12 +8,15 @@ services:
     build: .
     image: modelhub
     container_name: modelhub
-    ports:
-      - "8000:8000"
+    # host 网络：共享宿主网络栈（可直接访问宿主 127.0.0.1:7897 代理；8000 直接监听宿主，无需 ports 映射）
+    network_mode: host
     env_file:
       - .env
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////data/gateway.db
+      # UPSTREAM_PROXY 不要写死在这里（各机器代理端口不同）——在 .env 中配置，
+      # 经 env_file 自动注入；境外供应商(Grok/OpenAI/Claude/Gemini)需代理时设为
+      # 如 http://127.0.0.1:7897，留空则全部直连。境内供应商由代理分流规则直连。
     volumes:
       - gateway-data:/data
     restart: unless-stopped

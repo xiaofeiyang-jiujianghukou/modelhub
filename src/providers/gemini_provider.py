@@ -9,6 +9,8 @@ import uuid
 from typing import Any, AsyncGenerator
 
 import httpx
+
+from src.config import settings
 from loguru import logger
 
 from src.providers.base import BaseProvider
@@ -106,7 +108,7 @@ class GeminiProvider(BaseProvider):
     ) -> dict[str, Any]:
         body = self._convert_request(payload)
         request_model = payload.get("model", upstream_model)
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, proxy=settings.upstream_proxy or None) as client:
             try:
                 resp = await client.post(
                     self._url(upstream_model),
@@ -141,7 +143,7 @@ class GeminiProvider(BaseProvider):
         chat_id = f"chatcmpl-{uuid.uuid4().hex}"
         created = int(time.time())
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, proxy=settings.upstream_proxy or None) as client:
             try:
                 async with client.stream(
                     "POST",
@@ -221,7 +223,7 @@ class GeminiProvider(BaseProvider):
             "parameters": {"sampleCount": n},
         }
         url = f"{self.base_url}/v1/projects/-/locations/us-central1/publishers/google/models/{upstream_model}:predict?key={self.api_key}"
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, proxy=settings.upstream_proxy or None) as client:
             try:
                 resp = await client.post(url, headers=self._headers(), json=body)
                 resp.raise_for_status()
