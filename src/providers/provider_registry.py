@@ -84,12 +84,15 @@ _PROVIDER_SPECS = [
     # 注意：4 个旧模型已从现行官方文档移除（迁移 TokenHub，停止新购）；价格为历史官方公告价
     # （元/1M，按 7.2 折算 USD）：TurboS 0.8/2、Turbo 15/50（2024-09 发布价）、Pro 30/100（2024-05 降价公告）、Lite 免费
     # 上下文：TurboS 最大输入 32K/输出 16K；Turbo 28K/4K；Pro 32K 长文/28K/4K；Lite 256K（官方公告/产品页）
-    # 暂时不接混元（不划算）——static 清单清空，后续接入时再补模型
+    # ── 腾讯混元 / LKEAP TokenPlan（套餐端点，GET /models 可用，api 拉取）─────────
+    # api.lkeap.cloud.tencent.com/plan/v3 为腾讯 TokenPlan 汇聚套餐端点
+    # （一个 Key 含 DeepSeek/GLM/Kimi/MiniMax 等开源模型，类似方舟 Coding Plan）
     ProviderSpec(
-        key="hunyuan", display_name="混元",
-        default_base_url="https://api.hunyuan.cloud.tencent.com/v1",
-        model_source="static",
-        static_models=(),
+        key="hunyuan", display_name="混元 (腾讯 TokenPlan)",
+        default_base_url="https://api.lkeap.cloud.tencent.com/plan/v3",
+        model_source="api",
+        # 端点同时返回同模型的横线/点号双命名与含斜杠 ID（破坏 厂商/模型 键格式），全部排除
+        exclude_patterns=("deepseek/", "glm-5-", "kimi-k-2-", "minimax-m-2-", "-0731", "-0813"),
     ),
     # ── 阿里百炼 Token Plan（套餐端点，GET /models 可用，api 拉取）────────────────
     # token-plan.cn-beijing.maas.aliyuncs.com 为 Token Plan 订阅套餐专用端点（Key 为 sk-sp- 前缀）
